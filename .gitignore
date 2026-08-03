@@ -1,0 +1,43 @@
+.DS_Store
+
+# Local IDE and Harmony/DevEco generated state
+.idea/
+.hvigor/
+oh_modules/
+node_modules/
+oh-package-lock.json5
+
+# Local SDK/tool downloads and extracted vendor packages
+command-line-tools/
+devecostudio-*/
+ohpm-repo-*/
+downloads/
+cache/
+artifacts/
+mobile-station/
+standard-cann-aarch64/
+*.run
+*.dmg
+*.pkg
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Upstream source checkout is kept local for now.
+cann-recipes-harmony-infer/
+
+# Generated model/build outputs
+build/
+build_out/
+cmake-build-*/
+*.om
+*.omc
+*.onnx
+*.log
+
+# Python/local envs
+.venv/
+venv/
+__pycache__/
+*.pyc
