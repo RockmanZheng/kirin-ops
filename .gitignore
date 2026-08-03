@@ -3,6 +3,7 @@
 # Local IDE and Harmony/DevEco generated state
 .idea/
 .hvigor/
+.cxx/
 oh_modules/
 node_modules/
 oh-package-lock.json5
@@ -24,8 +25,13 @@ standard-cann-aarch64/
 *.tar.gz
 *.tgz
 
-# Upstream source checkout is kept local for now.
-cann-recipes-harmony-infer/
+# Nested checkout metadata and generated local state.
+cann-recipes-harmony-infer/.git/
+cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/.idea/
+cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/.hvigor/
+cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/entry/.cxx/
+cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/.clangd
+cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/.clang-tidy
 
 # Generated model/build outputs
 build/

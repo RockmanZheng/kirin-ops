@@ -2,12 +2,13 @@
 
 Private ops workspace for the Kirin/HarmonyOS CANN spike.
 
-This repository is intentionally scoped to portable scripts, setup notes, and checkpoints. It does not vendor the upstream `cann-recipes-harmony-infer` checkout or local SDK/tool downloads. Those stay local and should be cloned/downloaded separately on each machine.
+This repository is intentionally scoped to portable scripts, setup notes, checkpoints, and a vendored source snapshot of `cann-recipes-harmony-infer`. It does not include local SDK/tool downloads, generated build artifacts, or downloaded CANN packages.
 
 ## Current Layout
 
 - `docs/`: setup notes, DevEco guide, Docker notes, and checkpoints.
 - `scripts/`: local helper scripts for DevEco/Harmony and remote CANN containers.
+- `cann-recipes-harmony-infer/`: vendored source snapshot used for the Kirin/HarmonyOS spike.
 
 ## Current Target
 
