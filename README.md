@@ -26,3 +26,9 @@ The public standard `aarch64` CANN toolkit installs, but it has not compiled the
 See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the current state and evidence.
 
 For physical-device validation commands, see `docs/kirin-real-device-test-playbook.md`.
+
+Scripted HDC test wrapper:
+
+```bash
+scripts/test-harmonyos-pc.sh --hap /path/to/entry-default-signed.hap
+```

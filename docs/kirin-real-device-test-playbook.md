@@ -70,6 +70,44 @@ export HAP="/Users/zhenglewen/projects/kirin-ops/artifacts/prebuilt-demos/cannki
 
 Use that unsigned artifact only for package inspection or for systems that permit unsigned HAP installation.
 
+## Scripted Run
+
+The repo includes an executable wrapper for the install/start/log workflow:
+
+```bash
+cd /Users/zhenglewen/projects/kirin-ops
+scripts/test-harmonyos-pc.sh --hap /absolute/path/to/entry-default-signed.hap
+```
+
+If more than one HDC target is connected:
+
+```bash
+scripts/test-harmonyos-pc.sh \
+  --target <target-id-from-hdc-list-targets> \
+  --hap /absolute/path/to/entry-default-signed.hap
+```
+
+The script writes evidence under:
+
+```text
+artifacts/real-device-runs/<timestamp>/
+```
+
+During the log capture window, tap `NPU推理` in the app UI. The script defaults to strict mode: it exits nonzero unless these log markers are found:
+
+```text
+LoadModelFromBuffer success
+InitIOTensors success
+OH_NNExecutor_RunSync success
+GetResult success
+```
+
+For a package/install smoke that should not fail on missing runtime markers:
+
+```bash
+scripts/test-harmonyos-pc.sh --hap /absolute/path/to/entry-default-signed.hap --no-strict
+```
+
 ## Verify HAP Contents Before Transfer
 
 Run this before copying the HAP to another machine:
