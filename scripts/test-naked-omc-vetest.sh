@@ -14,6 +14,15 @@ DEFAULT_BUNDLE_DIR="${ROOT}/artifacts/naked-omc/kirin-sobel-naked-omc-2026-08-03
 PREBUILT_OMC="${ROOT}/artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo/entry/src/main/resources/rawfile/SobelCustom.omc"
 
 BUNDLE_DIR="${BUNDLE_DIR:-}"
+BUNDLE_MANIFEST="${BUNDLE_MANIFEST:-}"
+BUNDLE_NAME="${BUNDLE_NAME:-}"
+BUNDLE_DESCRIPTION="${BUNDLE_DESCRIPTION:-}"
+BUNDLE_OMC=""
+BUNDLE_INPUT=""
+BUNDLE_GOLDEN=""
+BUNDLE_OUTPUT_NAME=""
+BUNDLE_TARGET_SOC=""
+BUNDLE_COMPARE=""
 OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
@@ -48,6 +57,9 @@ EVIDENCE_TEXT_EXPLICIT=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
+OUTPUT_NAME_EXPLICIT=0
+TARGET_SOC_EXPLICIT=0
+COMPARE_EXPLICIT=0
 LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Model Process|status:1}"
 RUNNER_LAUNCH_ERROR_RE="${RUNNER_LAUNCH_ERROR_RE:-inaccessible or not found|no such file|not found|permission denied|exec format error|cannot execute binary file|cannot link executable|bad elf|invalid elf|library .*not found|linker .*not found}"
 FAILURE_HINT_RE="${FAILURE_HINT_RE:-Load model|loading model|Model Process|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Recompile failed|BuildModelByHcl failed|status:1}"
@@ -64,7 +76,10 @@ Runs a naked .omc file on a HarmonyOS target using a native CLI runner:
     --output_dir=/data/local/tmp/
 
 Options:
-  --bundle-dir DIR       Directory containing SobelCustom.omc, x.bin, and optional y.bin.
+  --bundle-dir DIR       Directory containing a bundle.env manifest, or legacy
+                         SobelCustom.omc, x.bin, and optional y.bin.
+  --bundle-manifest PATH Manifest file for a generic OMC bundle. Default:
+                         <bundle-dir>/bundle.env when present.
   --omc PATH             Local OMC model file. Overrides --bundle-dir default.
   --input PATHS          Local input .bin path, or comma-separated local input paths.
                          Multi-input example: x1.bin,x2.bin
@@ -104,6 +119,20 @@ Typical Sobel run on the HarmonyOS PC from issue #1:
   scripts/test-naked-omc-vetest.sh \
     --target SH236HS0488 \
     --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
+    --no-clear-logs
+
+Generic bundle example:
+  bundle.env:
+    NAME=gelu_fp16
+    OMC=gelu_fp16.omc
+    INPUT=gelu_fp16_input.bin
+    OUTPUT_NAME=output_0
+    TARGET_SOC=kirin9030
+    COMPARE=0
+
+  scripts/test-naked-omc-vetest.sh \
+    --target SH236HS0488 \
+    --bundle-dir "$PWD/kirin9030-gelu-fp16" \
     --no-clear-logs
 
 Multi-input example, matching the observed model_run_tool convention:
@@ -197,6 +226,117 @@ normalize_soc_token() {
   esac
 }
 
+trim_value() {
+  sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
+
+unquote_manifest_value() {
+  local value="$1"
+
+  value="$(printf '%s' "${value}" | trim_value)"
+  case "${value}" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
+  esac
+  printf '%s\n' "${value}"
+}
+
+resolve_bundle_path() {
+  local value="$1"
+
+  [ -n "${value}" ] || return 0
+  case "${value}" in
+    /*|~*)
+      printf '%s\n' "${value}"
+      ;;
+    *)
+      printf '%s/%s\n' "${BUNDLE_DIR}" "${value}"
+      ;;
+  esac
+}
+
+resolve_bundle_input_paths() {
+  local value="$1"
+  local item
+  local resolved
+  local output=""
+
+  IFS=',' read -r -a bundle_input_items <<< "${value}"
+  for item in "${bundle_input_items[@]}"; do
+    item="$(printf '%s' "${item}" | trim_value)"
+    [ -n "${item}" ] || continue
+    resolved="$(resolve_bundle_path "${item}")"
+    if [ -z "${output}" ]; then
+      output="${resolved}"
+    else
+      output="${output},${resolved}"
+    fi
+  done
+
+  printf '%s\n' "${output}"
+}
+
+load_bundle_manifest() {
+  local manifest="$1"
+  local line
+  local key
+  local value
+
+  [ -f "${manifest}" ] || die "bundle manifest not found: ${manifest}"
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    line="${line%$'\r'}"
+    case "${line}" in
+      ''|\#*)
+        continue
+        ;;
+    esac
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    [ "${key}" != "${line}" ] || continue
+
+    key="$(printf '%s' "${key}" | trim_value)"
+    value="$(unquote_manifest_value "${value}")"
+
+    case "${key}" in
+      NAME|BUNDLE_NAME)
+        BUNDLE_NAME="${value}"
+        ;;
+      DESCRIPTION|BUNDLE_DESCRIPTION)
+        BUNDLE_DESCRIPTION="${value}"
+        ;;
+      OMC|MODEL|MODEL_FILE)
+        BUNDLE_OMC="${value}"
+        ;;
+      INPUT|INPUTS)
+        BUNDLE_INPUT="${value}"
+        ;;
+      GOLDEN|GOLDEN_FILE|EXPECTED_OUTPUT)
+        BUNDLE_GOLDEN="${value}"
+        ;;
+      OUTPUT_NAME|OUTPUT)
+        BUNDLE_OUTPUT_NAME="${value}"
+        ;;
+      TARGET_SOC|SOC|SOC_VERSION)
+        BUNDLE_TARGET_SOC="${value}"
+        ;;
+      COMPARE)
+        BUNDLE_COMPARE="${value}"
+        ;;
+      *)
+        warn "ignoring unknown bundle manifest key ${key} in ${manifest}"
+        ;;
+    esac
+  done < "${manifest}"
+}
+
 extract_soc_versions_from_text() {
   awk '
     {
@@ -266,7 +406,7 @@ write_model_metadata() {
     echo "raw_strings:"
     if command -v strings >/dev/null 2>&1; then
       strings -a "${file}" | awk '
-        /soc_version|kirin[0-9]+|Kirin[0-9]+|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|hiai_version/ {
+        /soc_version|kirin[0-9]+|Kirin[0-9]+|kirinx[0-9]+|KirinX[0-9]+|q709030|Q709030|changsha|Changsha|chs|CHS|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|QuantMatmul|MatMul|Gelu|GELU|Add|hiai_version|platform|form/ {
           print
           count++
           if (count >= 120) {
@@ -351,6 +491,10 @@ write_failure_summary_if_missing() {
   {
     echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo "target=${TARGET:-}"
+    echo "bundle_dir=${BUNDLE_DIR:-}"
+    echo "bundle_manifest=${BUNDLE_MANIFEST:-}"
+    echo "bundle_name=${BUNDLE_NAME:-}"
+    echo "bundle_description=${BUNDLE_DESCRIPTION:-}"
     echo "model_run_tool=${MODEL_RUN_TOOL:-}"
     echo "device_dir=${DEVICE_DIR:-}"
     echo "omc=${OMC:-}"
@@ -574,6 +718,11 @@ while [ "$#" -gt 0 ]; do
       BUNDLE_DIR="$2"
       shift 2
       ;;
+    --bundle-manifest)
+      [ "$#" -ge 2 ] || die "--bundle-manifest requires a path"
+      BUNDLE_MANIFEST="$2"
+      shift 2
+      ;;
     --omc)
       [ "$#" -ge 2 ] || die "--omc requires a path"
       OMC="$2"
@@ -600,6 +749,7 @@ while [ "$#" -gt 0 ]; do
     --target-soc)
       [ "$#" -ge 2 ] || die "--target-soc requires a SoC value"
       TARGET_SOC="$2"
+      TARGET_SOC_EXPLICIT=1
       shift 2
       ;;
     --model-run-tool)
@@ -615,6 +765,7 @@ while [ "$#" -gt 0 ]; do
     --output-name)
       [ "$#" -ge 2 ] || die "--output-name requires a file name"
       OUTPUT_NAME="$2"
+      OUTPUT_NAME_EXPLICIT=1
       shift 2
       ;;
     --log-seconds)
@@ -687,6 +838,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-compare)
       COMPARE=0
+      COMPARE_EXPLICIT=1
       shift
       ;;
     --no-logs)
@@ -712,10 +864,59 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -n "${BUNDLE_DIR}" ]; then
-  [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${BUNDLE_DIR}/SobelCustom.omc"
-  [ "${INPUT_EXPLICIT}" -eq 1 ] || INPUT="${BUNDLE_DIR}/x.bin"
-  if [ "${GOLDEN_EXPLICIT}" -eq 0 ] && [ "${OMC_EXPLICIT}" -eq 0 ] && [ "${INPUT_EXPLICIT}" -eq 0 ]; then
-    GOLDEN="${BUNDLE_DIR}/y.bin"
+  [ -d "${BUNDLE_DIR}" ] || die "bundle directory not found: ${BUNDLE_DIR}"
+  BUNDLE_DIR="$(cd "${BUNDLE_DIR}" && pwd -P)"
+  if [ -z "${BUNDLE_MANIFEST}" ] && [ -f "${BUNDLE_DIR}/bundle.env" ]; then
+    BUNDLE_MANIFEST="${BUNDLE_DIR}/bundle.env"
+  fi
+  if [ -n "${BUNDLE_MANIFEST}" ]; then
+    load_bundle_manifest "${BUNDLE_MANIFEST}"
+  fi
+
+  if [ "${OMC_EXPLICIT}" -eq 0 ]; then
+    if [ -n "${BUNDLE_OMC}" ]; then
+      OMC="$(resolve_bundle_path "${BUNDLE_OMC}")"
+    else
+      OMC="${BUNDLE_DIR}/SobelCustom.omc"
+    fi
+  fi
+
+  if [ "${INPUT_EXPLICIT}" -eq 0 ]; then
+    if [ -n "${BUNDLE_INPUT}" ]; then
+      INPUT="$(resolve_bundle_input_paths "${BUNDLE_INPUT}")"
+    else
+      INPUT="${BUNDLE_DIR}/x.bin"
+    fi
+  fi
+
+  if [ "${GOLDEN_EXPLICIT}" -eq 0 ]; then
+    if [ -n "${BUNDLE_GOLDEN}" ]; then
+      GOLDEN="$(resolve_bundle_path "${BUNDLE_GOLDEN}")"
+    elif [ -z "${BUNDLE_MANIFEST}" ] && [ "${OMC_EXPLICIT}" -eq 0 ] && [ "${INPUT_EXPLICIT}" -eq 0 ]; then
+      GOLDEN="${BUNDLE_DIR}/y.bin"
+    fi
+  fi
+
+  if [ "${OUTPUT_NAME_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_OUTPUT_NAME}" ]; then
+    OUTPUT_NAME="${BUNDLE_OUTPUT_NAME}"
+  fi
+
+  if [ "${TARGET_SOC_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_TARGET_SOC}" ]; then
+    TARGET_SOC="${BUNDLE_TARGET_SOC}"
+  fi
+
+  if [ "${COMPARE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE}" ]; then
+    case "$(printf '%s' "${BUNDLE_COMPARE}" | tr '[:upper:]' '[:lower:]')" in
+      0|false|no|none|skip|off)
+        COMPARE=0
+        ;;
+      1|true|yes|on)
+        COMPARE=1
+        ;;
+      *)
+        die "bundle manifest COMPARE must be 0/1/true/false, got: ${BUNDLE_COMPARE}"
+        ;;
+    esac
   fi
 elif [ -d "${DEFAULT_BUNDLE_DIR}" ]; then
   [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${DEFAULT_BUNDLE_DIR}/SobelCustom.omc"
@@ -792,6 +993,8 @@ TARGET=${TARGET:-<auto>}
 TARGET_SOC=${TARGET_SOC:-<auto>}
 MODEL_RUN_TOOL=${MODEL_RUN_TOOL}
 BUNDLE_DIR=${BUNDLE_DIR:-<none>}
+BUNDLE_MANIFEST=${BUNDLE_MANIFEST:-<none>}
+BUNDLE_NAME=${BUNDLE_NAME:-<none>}
 OMC=${OMC:-<missing>}
 INPUT=${INPUT:-<missing>}
 GOLDEN=${GOLDEN:-<none>}
@@ -837,7 +1040,10 @@ for input_file in "${INPUT_FILES[@]}"; do
   [ -f "${input_file}" ] || die "input file not found: ${input_file}"
 done
 
-if [ -n "${GOLDEN}" ] && [ ! -f "${GOLDEN}" ]; then
+if [ -z "${GOLDEN}" ] && [ "${COMPARE}" -eq 1 ]; then
+  warn "golden file not provided; disabling compare and treating pulled output as run confirmation"
+  COMPARE=0
+elif [ -n "${GOLDEN}" ] && [ ! -f "${GOLDEN}" ]; then
   warn "golden file not found; disabling compare: ${GOLDEN}"
   COMPARE=0
 fi
@@ -877,6 +1083,12 @@ log "evidence dir: ${EVIDENCE_DIR}"
 log "evidence archive: ${EVIDENCE_ARCHIVE}"
 log "model_run_tool: ${MODEL_RUN_TOOL}"
 log "remote work dir: ${DEVICE_DIR}"
+if [ -n "${BUNDLE_MANIFEST}" ]; then
+  log "bundle manifest: ${BUNDLE_MANIFEST}"
+fi
+if [ -n "${BUNDLE_NAME}" ]; then
+  log "bundle name: ${BUNDLE_NAME}"
+fi
 log "omc: ${OMC}"
 log "input: ${INPUT}"
 
@@ -1228,6 +1440,8 @@ fi
 RESULT="NOT_CONFIRMED"
 if [ "${COMPARE_RESULT}" = "PASS" ]; then
   RESULT="PASS_CANDIDATE"
+elif [ "${OUTPUT_PULLED}" -eq 1 ] && [ "${COMPARE}" -eq 0 ]; then
+  RESULT="PASS_OUTPUT_PULLED_NO_COMPARE"
 elif [ "${OUTPUT_PULLED}" -eq 1 ]; then
   RESULT="OUTPUT_PULLED_NO_COMPARE"
 fi
@@ -1235,6 +1449,10 @@ fi
 {
   echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "target=${TARGET}"
+  echo "bundle_dir=${BUNDLE_DIR:-}"
+  echo "bundle_manifest=${BUNDLE_MANIFEST:-}"
+  echo "bundle_name=${BUNDLE_NAME:-}"
+  echo "bundle_description=${BUNDLE_DESCRIPTION:-}"
   echo "model_run_tool=${MODEL_RUN_TOOL}"
   echo "device_dir=${DEVICE_DIR}"
   echo "omc=${OMC}"
@@ -1300,6 +1518,11 @@ fi
 
 if [ "${RESULT}" = "PASS_CANDIDATE" ]; then
   log "PASS_CANDIDATE: output was pulled and matches the golden file."
+  exit 0
+fi
+
+if [ "${RESULT}" = "PASS_OUTPUT_PULLED_NO_COMPARE" ]; then
+  log "PASS_OUTPUT_PULLED_NO_COMPARE: output was pulled; no golden compare was requested."
   exit 0
 fi
 

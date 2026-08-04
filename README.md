@@ -14,9 +14,10 @@ This repository is intentionally scoped to portable scripts, setup notes, checkp
 
 Run the first real-device spike on a HarmonyOS phone with a Kirin chip:
 
-1. Fast path: run the prebuilt `SobelCustom.omc` on a real device through `/data/local/tmp/model_run_tool`.
-2. Full toolchain path: build the Sobel custom operator on Linux and convert it with ATC.
-3. Validate NPU inference and collect device evidence.
+1. Fast path: run any chip-matched prebuilt `.omc` bundle on a real device through `/data/local/tmp/model_run_tool`.
+2. Current Kirin9030 priority: get a known-good `.omc + input.bin` bundle, for example GELU/Add extracted from `/data/model` on the internal HarmonyOS target.
+3. Full toolchain path: build a custom operator on Linux and convert it with ATC/OMG for the actual target SoC/runtime.
+4. Validate NPU inference and collect device evidence.
 
 The previous HAP install + `aa start` workflow is not the current operator/kernel test path. It was removed from the active scripts after the real HarmonyOS PC history showed that local testing uses `model_run_tool` directly.
 
@@ -31,5 +32,11 @@ For the naked `.omc` `model_run_tool` path, see `docs/kirin-naked-omc-test-playb
 Scripted naked OMC `model_run_tool` wrapper:
 
 ```bash
-scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin-sobel-naked-omc-2026-08-03
+scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin9030-gelu-fp16-2026-08-04
+```
+
+Package a generic bundle once an `.omc` and its inputs are available:
+
+```bash
+scripts/package-naked-omc-bundle.sh --name kirin9030-gelu-fp16-2026-08-04 --omc ./gelu_fp16.omc --input ./gelu_fp16_input.bin --target-soc kirin9030
 ```

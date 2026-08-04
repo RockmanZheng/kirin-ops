@@ -790,6 +790,38 @@ Next decisive evidence needed from the real HarmonyOS PC:
 2. If Sobel still fails at model load, copy/paste `<evidence-dir>/evidence-report.txt` into the issue. If file upload is available, attach the generated `<evidence-dir>.tgz` and `<evidence-dir>.tgz.sha256`.
 3. Run a known-good `gelu_fp16.omc` or `add_1.omc` on the same target with the same script. If known-good models pass while Sobel fails, the runner/runtime path is proven and the Sobel prebuilt model must be regenerated or replaced for the target SoC/runtime.
 
+2026-08-04 Kirin9030 artifact search and generic-bundle update:
+
+- The target artifact search has been broadened from Sobel/QuantMatmul to any precompiled CANN `.omc` that can be tied to Kirin9030/Changsha/Q709030.
+- Current public-source result:
+  - Local `cann-recipes-harmony-infer` has Kirin9030-capable source samples such as QuantMatmul, but no checked-in Kirin9030 `.omc`.
+  - QuantMatmul evidence: docs list Kirin 9030 as supported, `CMakePresets.json` sets `ASCEND_COMPUTE_UNIT=kirin9030`, and `op_host/quant_matmul_custom.cpp` calls `AddConfig("kirin9030")`.
+  - Public `cann-skills-zyh` / `cannbot-skills` docs include `omg --platform=kirin9030 --target=omc` flow for ASR W4A16, but those repos contain generation instructions only; no `.omc` artifacts were found.
+  - GitHub code search did not find public CANN `.omc` binaries with `soc_version`, `hiai_version`, `Bisheng-Compiler`, `Kirin9030`, `gelu_fp16.omc`, `gelu_fp32.omc`, or `add_1.omc`.
+  - `npu-group-3` did not expose `/data/model` or any relevant `.omc` files in the accessible workspace search; `/data/model` belongs to the HarmonyOS target/internal test machine, not this remote Linux host.
+- Known-good OMC names from issue #1 history remain the best candidate source:
+  - `/data/model/gelu_fp16.omc`
+  - `/data/model/gelu_fp16_input.bin`
+  - `/data/model/gelu_fp32.omc`
+  - `/data/model/gelu_fp32_input.bin`
+  - `/data/model/add_1.omc`
+  - `/data/model/add_x1.bin`
+  - `/data/model/add_x2.bin`
+  - `/data/model/add_fp16_x1.bin`
+  - `/data/model/add_fp16_x2.bin`
+- Added generic bundle support to `scripts/test-naked-omc-vetest.sh`:
+  - A bundle may now include `bundle.env`.
+  - Manifest keys include `OMC`, `INPUT`, `GOLDEN`, `OUTPUT_NAME`, `TARGET_SOC`, and `COMPARE`.
+  - Relative manifest paths resolve inside the bundle directory.
+  - Multi-input values remain comma-separated.
+  - If no golden is provided, the script disables compare and treats a pulled output as `PASS_OUTPUT_PULLED_NO_COMPARE`.
+  - If a golden is provided and byte compare passes, the result remains `PASS_CANDIDATE`.
+- Added `scripts/package-naked-omc-bundle.sh`:
+  - Packages any `.omc + input(s) [+ optional golden]` into a standard bundle directory.
+  - Writes `bundle.env`, `README.txt`, `SHA256SUMS`.
+  - Produces `artifacts/releases/<name>.zip` and `<name>.zip.sha256`.
+- Updated `docs/kirin-naked-omc-test-playbook.md` and `README.md` to make Kirin9030 bundle extraction/packaging the active fast path. The old Sobel Kirin9020 bundle is now documented as a legacy runner-path reference, not the Kirin9030 test artifact.
+
 ## Re-entry Commands
 
 Open the HarmonyOS sample in DevEco Studio:

@@ -21,6 +21,36 @@ hdc -t "$SN" file recv /data/local/tmp/output_0 ./output.bin
 
 不再使用 `com.example.naticvetestdemo`、HAP 安装、`aa start --ps omPath` 这条路径。
 
+## Kirin9030 OMC 搜索状态
+
+截至 2026-08-04，本仓没有找到可直接下载的 Kirin9030/Changsha/Q709030 预编译 `.omc`。
+
+已经确认的公开信息：
+
+```text
+cann-recipes-harmony-infer 的 QuantMatmul/SliceGelu/GatherDequantInt8 是源码和编译样例，不是预编译 OMC bundle。
+QuantMatmul 文档声明支持 Kirin X90 和 Kirin 9030，CMakePresets 里 ASCEND_COMPUTE_UNIT=kirin9030，op_host 里 AddConfig("kirin9030")。
+cann-skills-zyh / cannbot-skills 里的 model-infer-harmony 是 Kirin9030 OMC 生成流程，示例命令是 omg --platform=kirin9030 --target=omc，但仓库没有提交生成后的 .omc。
+GitHub code search 没有命中带 soc_version/hiai_version/Bisheng-Compiler/Kirin9030 的 CANN .omc。
+GitHub/GitCode/Web 搜索没有找到 gelu_fp16.omc、gelu_fp32.omc、add_1.omc 的公开下载源。
+```
+
+所以现在不能把“源码支持 Kirin9030”当成“已有 Kirin9030 OMC artifact”。要直接真机跑 Kirin9030，目前最现实的来源是 issue #1 history 里那台真机/内网机器上的 known-good 文件：
+
+```text
+/data/model/gelu_fp16.omc
+/data/model/gelu_fp16_input.bin
+/data/model/gelu_fp32.omc
+/data/model/gelu_fp32_input.bin
+/data/model/add_1.omc
+/data/model/add_x1.bin
+/data/model/add_x2.bin
+/data/model/add_fp16_x1.bin
+/data/model/add_fp16_x2.bin
+```
+
+拿到其中任意一组 `.omc + input.bin` 后，先用 `scripts/package-naked-omc-bundle.sh` 做成标准 bundle，再用 `scripts/test-naked-omc-vetest.sh --bundle-dir ...` 跑。
+
 ## 当前根因判断
 
 从最新真机日志可以确定：
@@ -46,6 +76,8 @@ model_run_tool 已解析到模型名 SobelCustom
 下一次失败时必须看 evidence 里的诊断文件，而不是只看终端上的 `status:1`。
 
 ## 当前已准备文件
+
+注意：下面这个 Sobel release 是旧的 Kirin9020 预编译样例，不是 Kirin9030/Changsha 目标。它现在只能作为脚本和 runner 路径验证材料，不能再作为 Kirin9030 测试 artifact。
 
 Release:
 
@@ -151,6 +183,17 @@ shasum -a 256 kirin-sobel-naked-omc-2026-08-03.zip
 unzip -o kirin-sobel-naked-omc-2026-08-03.zip
 ```
 
+如果后续已经有 Kirin9030 bundle，例如 `kirin9030-gelu-fp16-2026-08-04.zip`，下载和解压方式相同：
+
+```bash
+gh release download kirin9030-gelu-fp16-2026-08-04 \
+  --repo RockmanZheng/kirin-ops \
+  --pattern 'kirin9030-gelu-fp16-2026-08-04.zip'
+
+shasum -a 256 kirin9030-gelu-fp16-2026-08-04.zip
+unzip -o kirin9030-gelu-fp16-2026-08-04.zip
+```
+
 确认设备：
 
 ```bash
@@ -181,6 +224,19 @@ scripts/test-naked-omc-vetest.sh \
 ```
 
 当前这个 Sobel bundle 的 `.omc` 是 `kirin9020`。如果设备侧 `ohos.boot.chiptype` 与人工传入的 `--target-soc` 冲突，或 target SoC 与模型 SoC 冲突，严格模式下脚本会 fail fast，不会继续发送文件和运行模型。
+
+Kirin9030 bundle 跑法相同，只是 bundle 里会带 `bundle.env`：
+
+```bash
+scripts/test-naked-omc-vetest.sh \
+  --target "$SN" \
+  --bundle-dir "$PWD/kirin9030-gelu-fp16-2026-08-04" \
+  --device-dir "/data/local/tmp/z84378291" \
+  --model-run-tool "/data/local/tmp/z84378291/model_run_tool" \
+  --no-clear-logs
+```
+
+如果 `bundle.env` 里写了 `TARGET_SOC=kirin9030`，脚本会把它作为 SoC 断言；如果设备侧 `param get ohos.boot.chiptype` 返回了其他 Kirin 版本，严格模式会 fail fast。
 
 ## 手工命令
 
@@ -228,6 +284,150 @@ scripts/test-naked-omc-vetest.sh \
 ```
 
 脚本会把每个输入文件发送到 `/data/local/tmp/`，并生成远端逗号分隔参数。
+
+## 通用 OMC Bundle
+
+不要再把脚本和 Sobel 的 `SobelCustom.omc/x.bin/y.bin` 绑死。新的标准 bundle 用 `bundle.env` 描述模型和输入：
+
+```text
+kirin9030-gelu-fp16-2026-08-04/
+  README.txt
+  SHA256SUMS
+  bundle.env
+  gelu_fp16.omc
+  gelu_fp16_input.bin
+```
+
+`bundle.env` 示例：
+
+```bash
+NAME="kirin9030-gelu-fp16-2026-08-04"
+DESCRIPTION="GELU FP16 prebuilt OMC for Kirin9030 naked model_run_tool test"
+OMC="gelu_fp16.omc"
+INPUT="gelu_fp16_input.bin"
+OUTPUT_NAME="output_0"
+TARGET_SOC="kirin9030"
+COMPARE="0"
+```
+
+多输入示例：
+
+```bash
+NAME="kirin9030-add-fp16-2026-08-04"
+OMC="add_1.omc"
+INPUT="add_fp16_x1.bin,add_fp16_x2.bin"
+OUTPUT_NAME="output_0"
+TARGET_SOC="kirin9030"
+COMPARE="0"
+```
+
+字段含义：
+
+```text
+OMC          bundle 内的 .omc 文件名
+INPUT        一个输入文件，或逗号分隔的多个输入文件
+GOLDEN       可选；存在时做 byte-for-byte compare
+OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
+TARGET_SOC   目标芯片断言，例如 kirin9030
+COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
+```
+
+打包命令：
+
+```bash
+scripts/package-naked-omc-bundle.sh \
+  --name kirin9030-gelu-fp16-2026-08-04 \
+  --description "GELU FP16 prebuilt OMC for Kirin9030 naked model_run_tool test" \
+  --omc ./gelu_fp16.omc \
+  --input ./gelu_fp16_input.bin \
+  --target-soc kirin9030
+```
+
+生成：
+
+```text
+artifacts/naked-omc/kirin9030-gelu-fp16-2026-08-04/
+artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip
+artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip.sha256
+```
+
+上传 release：
+
+```bash
+TAG="kirin9030-gelu-fp16-2026-08-04"
+
+gh release create "$TAG" \
+  --repo RockmanZheng/kirin-ops \
+  --title "Kirin9030 GELU FP16 Naked OMC Bundle 2026-08-04" \
+  --notes "Generic naked OMC bundle for Kirin9030/Changsha model_run_tool testing." \
+  artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip \
+  artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip.sha256
+```
+
+如果 release 已经存在：
+
+```bash
+gh release upload "$TAG" \
+  --repo RockmanZheng/kirin-ops \
+  --clobber \
+  artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip \
+  artifacts/releases/kirin9030-gelu-fp16-2026-08-04.zip.sha256
+```
+
+## 从真机/内网机器提取 Known-Good OMC
+
+这些命令要在能连到那台 HarmonyOS target 的机器上执行。`/data/model/...` 是 target 或内网测试机上的路径，不是本机 Mac 的路径。
+
+GELU FP16：
+
+```bash
+export SN="SH236HS0488"
+mkdir -p kirin9030-gelu-fp16-2026-08-04-source
+
+hdc -t "$SN" file recv /data/model/gelu_fp16.omc \
+  kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16.omc
+
+hdc -t "$SN" file recv /data/model/gelu_fp16_input.bin \
+  kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16_input.bin
+
+strings -a kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16.omc \
+  | grep -Ei 'soc_version|kirin[0-9]+|kirinx[0-9]+|q709030|changsha|chs|platform|hiai_version' \
+  | head -80
+```
+
+然后打包：
+
+```bash
+scripts/package-naked-omc-bundle.sh \
+  --name kirin9030-gelu-fp16-2026-08-04 \
+  --description "GELU FP16 known-good OMC extracted from HarmonyOS target /data/model for Kirin9030 naked runner test" \
+  --omc kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16.omc \
+  --input kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16_input.bin \
+  --target-soc kirin9030
+```
+
+Add FP16 双输入：
+
+```bash
+export SN="SH236HS0488"
+mkdir -p kirin9030-add-fp16-2026-08-04-source
+
+hdc -t "$SN" file recv /data/model/add_1.omc \
+  kirin9030-add-fp16-2026-08-04-source/add_1.omc
+
+hdc -t "$SN" file recv /data/model/add_fp16_x1.bin \
+  kirin9030-add-fp16-2026-08-04-source/add_fp16_x1.bin
+
+hdc -t "$SN" file recv /data/model/add_fp16_x2.bin \
+  kirin9030-add-fp16-2026-08-04-source/add_fp16_x2.bin
+
+scripts/package-naked-omc-bundle.sh \
+  --name kirin9030-add-fp16-2026-08-04 \
+  --description "Add FP16 known-good OMC extracted from HarmonyOS target /data/model for Kirin9030 naked runner test" \
+  --omc kirin9030-add-fp16-2026-08-04-source/add_1.omc \
+  --input kirin9030-add-fp16-2026-08-04-source/add_fp16_x1.bin,kirin9030-add-fp16-2026-08-04-source/add_fp16_x2.bin \
+  --target-soc kirin9030
+```
 
 ## 脚本做了什么
 
@@ -341,6 +541,7 @@ scripts/test-naked-omc-vetest.sh ... --no-export-text
 ```text
 model_run_tool 返回成功
 /data/local/tmp/output_0 被拉回
+summary.txt 里 result=PASS_OUTPUT_PULLED_NO_COMPARE
 ```
 
 更强的成功标准：
@@ -350,7 +551,7 @@ output_0 与 y.bin 完全一致
 summary.txt 里 result=PASS_CANDIDATE
 ```
 
-如果 compare 通过，可以认为这条裸 `.omc` CLI runner 路径已经基本打通。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 ## 常见问题
 
@@ -596,12 +797,13 @@ model_run_tool 的输出 layout 与 y.bin 不一致
 
 ## 当前 blocker
 
-我们已经有 Sobel `.omc`、输入、golden 和自动化脚本，且真机已经跑到 `model_run_tool` 的模型加载阶段。
+我们已经有自动化脚本，且真机已经跑到 `model_run_tool` 的模型加载阶段。旧 Sobel bundle 的失败已经被定位为内部 platform/form compatibility，不是 HAP/签名/`aa start`/runner 路径问题。
 
 当前 blocker 是：
 
 ```text
-确认目标 HarmonyOS PC 的真实 Kirin SoC/runtime
-确认 history 里的 gelu/add .omc 在同一台设备上仍可加载运行
-拿到或重新生成和该目标 SoC 匹配的 SobelCustom.omc
+拿到一个真实 Kirin9030/Changsha/Q709030 可加载的预编译 OMC bundle
+bundle 必须包含对应 input .bin；有 golden 更好，没有也可以先 smoke
+公开源码目前只证明可生成 Kirin9030 OMC，没找到可下载的预编译 OMC
+最优先尝试从真机/内网机器 /data/model 提取 gelu_fp16/add_1 等 known-good OMC
 ```
