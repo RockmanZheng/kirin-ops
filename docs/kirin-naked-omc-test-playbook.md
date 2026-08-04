@@ -33,7 +33,7 @@ Asset:
 
 ```text
 kirin-sobel-naked-omc-2026-08-03.zip
-sha256: 7fd2e93320eb78cca820ed1a599cead439bca59675552a7a4dfc6860316118ba
+sha256: ea37de6ecd7af19f1fe74d6c1913e6081726d53d3a1128f4544c4c0e972f873b
 ```
 
 解压后目录内容：
@@ -287,6 +287,49 @@ hilog.filtered.log
 输入文件名和 model_run_tool 参数是否匹配
 ```
 
+模型加载失败：
+
+```text
+[INFO] Get modelname:SobelCustom
+[ERROR] Load model SobelCustom failed. status:1.
+[ERROR] Inference: loading model SobelCustom failed.
+[ERROR] [ModelManagerV1]Model Process ret failed.
+```
+
+含义：
+
+```text
+hdc 连通
+model_run_tool 存在且可执行
+.omc 和输入文件已经传到 /data/local/tmp
+失败点已经进入模型加载阶段
+```
+
+本地检查这个 prebuilt Sobel 模型：
+
+```bash
+strings -a kirin-sobel-naked-omc-2026-08-03/SobelCustom.omc | grep -E 'soc_version|kirin[0-9]+|Kirin[0-9]+'
+```
+
+当前 bundle 里的 `SobelCustom.omc` 暴露出的 SoC hint 是：
+
+```text
+soc_version
+kirin9020
+```
+
+如果目标 HarmonyOS PC 的 Kirin/NPU runtime 不是这个 target，或者当前 runtime 不接受这个 codelab 预编译模型，就会在 load 阶段失败。下一步要区分 runner 问题和模型兼容问题：
+
+```bash
+hdc -t "$SN" shell "param get const.product.model"
+hdc -t "$SN" shell "param get const.product.name"
+hdc -t "$SN" shell "param get const.product.software.version"
+hdc -t "$SN" shell "param get const.ohos.apiversion"
+hdc -t "$SN" shell "uname -a"
+```
+
+同时用同一台机器 history 里已知能跑的 `gelu_fp16.omc` 或 `add_1.omc` 再跑一遍。如果 gelu/add 还能跑，而 Sobel load 失败，则 runner 路线成立，问题是这个 Sobel prebuilt `.omc` 不是目标机可加载的模型。需要拿目标 SoC 对应的 Sobel `.omc`，或者在正确 `--soc_version` 的 CANN/mobile-station 环境重新生成。
+
 Compare 失败：
 
 ```text
@@ -303,10 +346,12 @@ model_run_tool 的输出 layout 与 y.bin 不一致
 
 ## 当前 blocker
 
-我们已经有 Sobel `.omc`、输入、golden 和自动化脚本。
+我们已经有 Sobel `.omc`、输入、golden 和自动化脚本，且真机已经跑到 `model_run_tool` 的模型加载阶段。
 
-唯一外部前置是：
+当前 blocker 是：
 
 ```text
-/data/local/tmp/model_run_tool 在目标 HarmonyOS 设备上存在且可执行
+确认目标 HarmonyOS PC 的真实 Kirin SoC/runtime
+确认 history 里的 gelu/add .omc 在同一台设备上仍可加载运行
+拿到或重新生成和该目标 SoC 匹配的 SobelCustom.omc
 ```

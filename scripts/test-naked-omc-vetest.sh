@@ -118,6 +118,31 @@ sha256_file() {
   fi
 }
 
+write_model_metadata() {
+  local file="$1"
+
+  {
+    echo "file=${file}"
+    printf 'size_bytes='
+    wc -c < "${file}" | tr -d '[:space:]'
+    echo
+    echo
+    if command -v strings >/dev/null 2>&1; then
+      strings -a "${file}" | awk '
+        /soc_version|kirin[0-9]+|Kirin[0-9]+|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|hiai_version/ {
+          print
+          count++
+          if (count >= 120) {
+            exit
+          }
+        }
+      '
+    else
+      echo "strings unavailable"
+    fi
+  }
+}
+
 remote_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
@@ -334,6 +359,7 @@ mkdir -p "${EVIDENCE_DIR}"
 SUMMARY="${EVIDENCE_DIR}/summary.txt"
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
+MODEL_INFO="${EVIDENCE_DIR}/model-strings-info.txt"
 TOOL_CHECK_LOG="${EVIDENCE_DIR}/model-run-tool-check.log"
 MKDIR_LOG="${EVIDENCE_DIR}/device-mkdir.log"
 REMOTE_CLEAN_LOG="${EVIDENCE_DIR}/remote-clean-output.log"
@@ -364,6 +390,12 @@ log "input: ${INPUT}"
     sha256_file "${GOLDEN}" || true
   fi
 } > "${EVIDENCE_DIR}/host-inputs.sha256"
+
+write_model_metadata "${OMC}" > "${MODEL_INFO}" || true
+MODEL_SOC_HINT="$(grep -E 'soc_version|kirin[0-9]+|Kirin[0-9]+' "${MODEL_INFO}" | tr '\n' ' ' || true)"
+if [ -n "${MODEL_SOC_HINT}" ]; then
+  log "model metadata hint: ${MODEL_SOC_HINT}"
+fi
 
 "${HDC_BIN}" list targets | tee "${TARGETS_FILE}" >/dev/null
 
@@ -500,8 +532,16 @@ set +e
 "${HDC_TARGET[@]}" shell "${RUN_CMD}" 2>&1 | tee "${RUN_LOG}"
 RUN_STATUS=${PIPESTATUS[0]}
 set -e
+MODEL_LOAD_FAILED=0
+if file_matches "${RUN_LOG}" 'Load model .* failed|loading model .* failed|Model Process ret failed|ConstructWithOfflineModelBuffer failed|OH_NNCompilation_Build failed'; then
+  MODEL_LOAD_FAILED=1
+  warn "model_run_tool reached the model loader, but the model failed to load. This points at OMC/target SoC/runtime compatibility, not HAP signing or aa start."
+fi
 if [ "${RUN_STATUS}" -ne 0 ] || file_matches "${RUN_LOG}" 'error:|failed|No such file|not found|permission denied|Error Code'; then
   if [ "${STRICT}" -eq 1 ]; then
+    if [ "${MODEL_LOAD_FAILED}" -eq 1 ]; then
+      die "model load failed; inspect ${RUN_LOG}, ${MODEL_INFO}, and ${TARGET_INFO}"
+    fi
     die "model_run_tool failed; inspect ${RUN_LOG}"
   fi
   warn "model_run_tool did not look successful; continuing because --no-strict is set"
@@ -570,6 +610,7 @@ fi
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
   echo "compare_result=${COMPARE_RESULT}"
+  echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
   echo "capture_logs=${CAPTURE_LOGS}"
   echo "strict=${STRICT}"
   echo "result=${RESULT}"
@@ -579,6 +620,7 @@ fi
   echo
   echo "important_files:"
   echo "- ${TARGET_INFO}"
+  echo "- ${MODEL_INFO}"
   echo "- ${TOOL_CHECK_LOG}"
   echo "- ${SEND_OMC_LOG}"
   echo "- ${SEND_INPUT_LOG}"

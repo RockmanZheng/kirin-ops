@@ -662,7 +662,7 @@ Interpretation:
 
   ```text
   artifacts/releases/kirin-sobel-naked-omc-2026-08-03.zip
-  sha256: 7fd2e93320eb78cca820ed1a599cead439bca59675552a7a4dfc6860316118ba
+  sha256: ea37de6ecd7af19f1fe74d6c1913e6081726d53d3a1128f4544c4c0e972f873b
   ```
 
 - The bundle contains:
@@ -680,11 +680,36 @@ Interpretation:
 - `scripts/test-naked-omc-vetest.sh --bundle-dir artifacts/naked-omc/kirin-sobel-naked-omc-2026-08-03 --dry-run` resolves the expected files and local `hdc` path correctly.
 - `bash -n scripts/test-naked-omc-vetest.sh` passed.
 
+2026-08-04 real-device update:
+
+- Issue #1 latest run reached the native runner path successfully:
+  - `/data/local/tmp/model_run_tool` existed and passed the script check.
+  - `SobelCustom.omc` and `x.bin` were sent to `/data/local/tmp`.
+  - The runner parsed the model name as `SobelCustom`.
+- Failure now occurs at model loading:
+
+  ```text
+  [INFO] Get modelname:SobelCustom
+  [ERROR] Load model SobelCustom failed. status:1.
+  [ERROR] Inference: loading model SobelCustom failed.
+  [ERROR] [ModelManagerV1]Model Process ret failed.
+  ```
+
+- Local metadata inspection of the prebuilt codelab model shows:
+
+  ```text
+  soc_version
+  kirin9020
+  ```
+
+- Interpretation: the HAP/signing/`aa start` path is no longer the active blocker for naked OMC testing. The current blocker is model compatibility: prove the target machine's real Kirin SoC/runtime and get a Sobel `.omc` generated for that target, or verify with a known-good gelu/add `.omc` from the same machine to isolate runner vs model.
+- `scripts/test-naked-omc-vetest.sh` now records local model string metadata in each evidence directory and classifies `Load model ... failed` as an OMC/target compatibility failure.
+
 Current blocker for this path:
 
-- We need the target HarmonyOS PC to have `/data/local/tmp/model_run_tool` present and executable.
-- If it is present, the naked OMC test can run without HAP installation/signing.
-- If it is missing, obtain `model_run_tool` from the internal environment or colleagues and place it under `/data/local/tmp/model_run_tool` with execute permission.
+- Confirm the target HarmonyOS PC's actual Kirin SoC/runtime identity.
+- Re-run a known-good gelu/add `.omc` from the machine history to verify `model_run_tool` is still healthy.
+- Obtain or regenerate `SobelCustom.omc` for the target SoC/runtime if the prebuilt `kirin9020` Sobel model is incompatible.
 
 ## Re-entry Commands
 
