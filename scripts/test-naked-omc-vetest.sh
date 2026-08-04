@@ -18,6 +18,7 @@ OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
 TARGET="${TARGET:-}"
+TARGET_SOC="${TARGET_SOC:-}"
 MODEL_RUN_TOOL="${MODEL_RUN_TOOL:-/data/local/tmp/model_run_tool}"
 DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
@@ -27,6 +28,7 @@ EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 CAPTURE_LOGS=1
 HILOG_CLEAR=1
 CHECK_TOOL=1
+CHECK_SOC=1
 PULL_OUTPUT=1
 COMPARE=1
 STRICT=1
@@ -54,6 +56,8 @@ Options:
                          Multi-input example: x1.bin,x2.bin
   --golden PATH          Expected output .bin file. Overrides --bundle-dir default.
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
+  --target-soc SOC       Expected target SoC, e.g. kirin9020, KirinX90, Kirin9030.
+                         Use this when the device does not expose SoC via param get.
   --model-run-tool PATH  Remote runner path. Default: /data/local/tmp/model_run_tool
   --device-dir PATH      Remote work dir. Default: /data/local/tmp
   --output-name NAME     Remote output file name to pull. Default: output_0
@@ -63,6 +67,7 @@ Options:
   --hilog-clear-timeout N
                          Seconds to wait for "hdc hilog -r". Default: 5
   --skip-tool-check      Do not check model_run_tool before running.
+  --skip-soc-check       Do not preflight-check .omc SoC metadata against the target.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
   --no-logs              Do not capture hilog.
@@ -118,6 +123,78 @@ sha256_file() {
   fi
 }
 
+normalize_soc_token() {
+  local token="$1"
+  local lower
+
+  lower="$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')"
+  case "${lower}" in
+    kirinx[0-9]*)
+      printf '%s\n' "${lower}" | sed -E 's/^(kirinx[0-9]+).*/\1/'
+      ;;
+    kirin[0-9]*)
+      printf '%s\n' "${lower}" | sed -E 's/^(kirin[0-9]+).*/\1/'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+extract_soc_versions_from_text() {
+  awk '
+    {
+      line = tolower($0)
+      scan = line
+      while (match(scan, /kirin[ _-]*x?[ _-]*[0-9][0-9]*/)) {
+        token = substr(scan, RSTART, RLENGTH)
+        gsub(/[ _-]/, "", token)
+        print token
+        scan = substr(scan, RSTART + RLENGTH)
+      }
+      print line
+    }
+  ' | tr -cs '[:alnum:]_+-' '\n' | while IFS= read -r token; do
+    normalize_soc_token "${token}" || true
+  done | awk 'NF && !seen[$0]++'
+}
+
+extract_model_soc_versions() {
+  local file="$1"
+
+  if command -v strings >/dev/null 2>&1; then
+    strings -a "${file}" | extract_soc_versions_from_text
+  fi
+}
+
+format_soc_set() {
+  local values="$1"
+
+  if [ -z "${values}" ]; then
+    printf '<unknown>\n'
+    return
+  fi
+
+  printf '%s\n' "${values}" | awk 'NF { if (out) { out = out "," $0 } else { out = $0 } } END { print out }'
+}
+
+soc_sets_intersect() {
+  local left="$1"
+  local right="$2"
+  local token
+
+  while IFS= read -r token; do
+    [ -n "${token}" ] || continue
+    if printf '%s\n' "${right}" | grep -Fqx "${token}"; then
+      return 0
+    fi
+  done <<EOF
+${left}
+EOF
+
+  return 1
+}
+
 write_model_metadata() {
   local file="$1"
 
@@ -127,6 +204,10 @@ write_model_metadata() {
     wc -c < "${file}" | tr -d '[:space:]'
     echo
     echo
+    echo "normalized_soc_versions:"
+    extract_model_soc_versions "${file}" || true
+    echo
+    echo "raw_strings:"
     if command -v strings >/dev/null 2>&1; then
       strings -a "${file}" | awk '
         /soc_version|kirin[0-9]+|Kirin[0-9]+|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|hiai_version/ {
@@ -199,6 +280,11 @@ while [ "$#" -gt 0 ]; do
       TARGET="$2"
       shift 2
       ;;
+    --target-soc)
+      [ "$#" -ge 2 ] || die "--target-soc requires a SoC value"
+      TARGET_SOC="$2"
+      shift 2
+      ;;
     --model-run-tool)
       [ "$#" -ge 2 ] || die "--model-run-tool requires a path"
       MODEL_RUN_TOOL="$2"
@@ -235,6 +321,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --skip-tool-check)
       CHECK_TOOL=0
+      shift
+      ;;
+    --skip-soc-check)
+      CHECK_SOC=0
       shift
       ;;
     --no-pull-output)
@@ -320,6 +410,7 @@ if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF
 HDC_BIN=${HDC_BIN}
 TARGET=${TARGET:-<auto>}
+TARGET_SOC=${TARGET_SOC:-<auto>}
 MODEL_RUN_TOOL=${MODEL_RUN_TOOL}
 BUNDLE_DIR=${BUNDLE_DIR:-<none>}
 OMC=${OMC:-<missing>}
@@ -333,6 +424,7 @@ EVIDENCE_DIR=${EVIDENCE_DIR}
 CAPTURE_LOGS=${CAPTURE_LOGS}
 HILOG_CLEAR=${HILOG_CLEAR}
 CHECK_TOOL=${CHECK_TOOL}
+CHECK_SOC=${CHECK_SOC}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 STRICT=${STRICT}
@@ -360,6 +452,7 @@ SUMMARY="${EVIDENCE_DIR}/summary.txt"
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
 MODEL_INFO="${EVIDENCE_DIR}/model-strings-info.txt"
+SOC_CHECK_LOG="${EVIDENCE_DIR}/soc-preflight.log"
 TOOL_CHECK_LOG="${EVIDENCE_DIR}/model-run-tool-check.log"
 MKDIR_LOG="${EVIDENCE_DIR}/device-mkdir.log"
 REMOTE_CLEAN_LOG="${EVIDENCE_DIR}/remote-clean-output.log"
@@ -391,10 +484,10 @@ log "input: ${INPUT}"
   fi
 } > "${EVIDENCE_DIR}/host-inputs.sha256"
 
+MODEL_SOC_VERSIONS="$(extract_model_soc_versions "${OMC}" || true)"
 write_model_metadata "${OMC}" > "${MODEL_INFO}" || true
-MODEL_SOC_HINT="$(grep -E 'soc_version|kirin[0-9]+|Kirin[0-9]+' "${MODEL_INFO}" | tr '\n' ' ' || true)"
-if [ -n "${MODEL_SOC_HINT}" ]; then
-  log "model metadata hint: ${MODEL_SOC_HINT}"
+if [ -n "${MODEL_SOC_VERSIONS}" ]; then
+  log "model soc hint(s): $(format_soc_set "${MODEL_SOC_VERSIONS}")"
 fi
 
 "${HDC_BIN}" list targets | tee "${TARGETS_FILE}" >/dev/null
@@ -433,8 +526,23 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
   for key in \
     const.product.model \
     const.product.name \
+    const.product.device \
+    const.product.board \
+    const.product.hardwareversion \
+    const.product.manufacturer \
     const.product.software.version \
-    const.ohos.apiversion
+    const.ohos.apiversion \
+    const.product.soc \
+    const.product.socversion \
+    const.soc_version \
+    ro.product.model \
+    ro.product.name \
+    ro.product.device \
+    ro.product.board \
+    ro.board.platform \
+    ro.hardware \
+    ro.soc.model \
+    ro.soc.manufacturer
   do
     printf '%s=' "${key}"
     "${HDC_TARGET[@]}" shell param get "${key}" 2>&1 || true
@@ -442,6 +550,47 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
   echo
   "${HDC_TARGET[@]}" shell uname -a 2>&1 || true
 } | tee "${TARGET_INFO}" >/dev/null
+
+SOC_CHECK_RESULT="SKIPPED"
+TARGET_SOC_VERSIONS=""
+if [ "${CHECK_SOC}" -eq 1 ]; then
+  if [ -n "${TARGET_SOC}" ]; then
+    TARGET_SOC_VERSIONS="$(printf '%s\n' "${TARGET_SOC}" | extract_soc_versions_from_text || true)"
+    [ -n "${TARGET_SOC_VERSIONS}" ] || die "--target-soc must look like a Kirin target, for example kirin9020 or KirinX90"
+    TARGET_SOC_SOURCE="cli/env"
+  else
+    TARGET_SOC_VERSIONS="$(extract_soc_versions_from_text < "${TARGET_INFO}" || true)"
+    TARGET_SOC_SOURCE="target-info"
+  fi
+
+  {
+    echo "check_soc=${CHECK_SOC}"
+    echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS}")"
+    echo "target_soc_source=${TARGET_SOC_SOURCE}"
+    echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS}")"
+  } > "${SOC_CHECK_LOG}"
+
+  if [ -z "${MODEL_SOC_VERSIONS}" ]; then
+    SOC_CHECK_RESULT="UNKNOWN_MODEL_SOC"
+    echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
+    warn "could not extract SoC metadata from OMC; continuing because compatibility cannot be preflighted"
+  elif [ -z "${TARGET_SOC_VERSIONS}" ]; then
+    SOC_CHECK_RESULT="UNKNOWN_TARGET_SOC"
+    echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
+    warn "could not infer target SoC from device params; pass --target-soc to make the compatibility preflight deterministic"
+  elif soc_sets_intersect "${MODEL_SOC_VERSIONS}" "${TARGET_SOC_VERSIONS}"; then
+    SOC_CHECK_RESULT="PASS"
+    echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
+    log "soc preflight passed: model=$(format_soc_set "${MODEL_SOC_VERSIONS}") target=$(format_soc_set "${TARGET_SOC_VERSIONS}")"
+  else
+    SOC_CHECK_RESULT="MISMATCH"
+    echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
+    if [ "${STRICT}" -eq 1 ]; then
+      die "soc preflight failed: model=$(format_soc_set "${MODEL_SOC_VERSIONS}") target=$(format_soc_set "${TARGET_SOC_VERSIONS}"). Inspect ${SOC_CHECK_LOG}; use --no-strict to continue anyway."
+    fi
+    warn "soc preflight mismatch: model=$(format_soc_set "${MODEL_SOC_VERSIONS}") target=$(format_soc_set "${TARGET_SOC_VERSIONS}"); continuing because --no-strict is set"
+  fi
+fi
 
 if [ "${CHECK_TOOL}" -eq 1 ]; then
   log "checking model_run_tool"
@@ -604,6 +753,10 @@ fi
   echo "omc=${OMC}"
   echo "input=${INPUT}"
   echo "golden=${GOLDEN:-}"
+  echo "check_soc=${CHECK_SOC}"
+  echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS:-}")"
+  echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS:-}")"
+  echo "soc_check_result=${SOC_CHECK_RESULT:-SKIPPED}"
   echo "output_name=${OUTPUT_NAME}"
   echo "output_remote=${OUTPUT_REMOTE}"
   echo "output_local=${OUTPUT_LOCAL}"
@@ -621,6 +774,7 @@ fi
   echo "important_files:"
   echo "- ${TARGET_INFO}"
   echo "- ${MODEL_INFO}"
+  echo "- ${SOC_CHECK_LOG}"
   echo "- ${TOOL_CHECK_LOG}"
   echo "- ${SEND_OMC_LOG}"
   echo "- ${SEND_INPUT_LOG}"

@@ -137,6 +137,18 @@ scripts/test-naked-omc-vetest.sh \
 
 `--no-clear-logs` 是因为我们已经见过部分机器上 `hdc hilog -r` 可能卡住。
 
+如果已经知道目标 SoC，建议显式传入，脚本会在传文件和运行前做确定性 preflight：
+
+```bash
+scripts/test-naked-omc-vetest.sh \
+  --target "$SN" \
+  --target-soc kirin9020 \
+  --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
+  --no-clear-logs
+```
+
+当前这个 Sobel bundle 的 `.omc` 是 `kirin9020`。如果你传 `--target-soc kirin9030` 或 `--target-soc KirinX90`，严格模式下脚本会 fail fast，不会继续发送文件和运行模型。
+
 ## 手工命令
 
 脚本等价于下面这组命令：
@@ -196,15 +208,18 @@ scripts/test-naked-omc-vetest.sh
 
 ```text
 1. 检查 hdc 和 target。
-2. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
-3. 创建/确认 /data/local/tmp。
-4. 发送 .omc 和一个或多个输入 .bin。
-5. 删除旧的 /data/local/tmp/output_0。
-6. 执行 model_run_tool。
-7. 捕获 hilog。
-8. 拉回 /data/local/tmp/output_0。
-9. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
-10. 写 evidence summary。
+2. 从本地 .omc 提取 embedded SoC metadata。
+3. 从目标机器 param/uname 收集设备信息。
+4. 如果能确认 model SoC 和 target SoC 不匹配，严格模式下 fail fast。
+5. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
+6. 创建/确认 /data/local/tmp。
+7. 发送 .omc 和一个或多个输入 .bin。
+8. 删除旧的 /data/local/tmp/output_0。
+9. 执行 model_run_tool。
+10. 捕获 hilog。
+11. 拉回 /data/local/tmp/output_0。
+12. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
+13. 写 evidence summary。
 ```
 
 Evidence 默认目录：
@@ -218,6 +233,8 @@ artifacts/naked-omc-runs/<timestamp>/
 ```text
 summary.txt
 target-info.txt
+model-strings-info.txt
+soc-preflight.log
 model-run-tool-check.log
 send-omc.log
 send-input.log
@@ -316,6 +333,31 @@ strings -a kirin-sobel-naked-omc-2026-08-03/SobelCustom.omc | grep -E 'soc_versi
 ```text
 soc_version
 kirin9020
+```
+
+脚本默认会做 SoC preflight：
+
+```text
+model-strings-info.txt  记录从 .omc 里提取到的 normalized_soc_versions
+target-info.txt         记录目标机器 param/uname
+soc-preflight.log       记录 model SoC、target SoC、检查结果
+```
+
+检查规则：
+
+```text
+model SoC 和 target SoC 都已知且匹配: PASS
+model SoC 和 target SoC 都已知但不匹配: 严格模式 fail fast
+model SoC 未知: WARN 后继续
+target SoC 自动检测不到: WARN 后继续，建议传 --target-soc
+```
+
+常用参数：
+
+```bash
+--target-soc kirin9020   # 显式声明目标 SoC，让 preflight 变成确定性检查
+--skip-soc-check         # 临时跳过 SoC preflight
+--no-strict              # SoC mismatch 只报警，继续跑，方便做反证实验
 ```
 
 如果目标 HarmonyOS PC 的 Kirin/NPU runtime 不是这个 target，或者当前 runtime 不接受这个 codelab 预编译模型，就会在 load 阶段失败。下一步要区分 runner 问题和模型兼容问题：

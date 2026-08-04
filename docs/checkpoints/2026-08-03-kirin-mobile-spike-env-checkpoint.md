@@ -705,6 +705,28 @@ Interpretation:
 - Interpretation: the HAP/signing/`aa start` path is no longer the active blocker for naked OMC testing. The current blocker is model compatibility: prove the target machine's real Kirin SoC/runtime and get a Sobel `.omc` generated for that target, or verify with a known-good gelu/add `.omc` from the same machine to isolate runner vs model.
 - `scripts/test-naked-omc-vetest.sh` now records local model string metadata in each evidence directory and classifies `Load model ... failed` as an OMC/target compatibility failure.
 
+2026-08-04 preflight update:
+
+- `scripts/test-naked-omc-vetest.sh` now includes a SoC compatibility preflight before file transfer and model execution.
+- It extracts normalized Kirin SoC tokens from the local `.omc` by inspecting embedded strings, for example `kirin9020`.
+- It collects a broader target info snapshot from `param get` and `uname -a`, then tries to infer target SoC tokens from that evidence.
+- It also supports an explicit target SoC override for deterministic checks:
+
+  ```bash
+  --target-soc kirin9020
+  ```
+
+- Behavior:
+  - If both model SoC and target SoC are known and match, continue.
+  - If both are known and mismatch, strict mode fails fast before sending files.
+  - If target SoC cannot be inferred automatically, warn and continue; pass `--target-soc` to make the check decisive.
+  - `--skip-soc-check` disables the preflight; `--no-strict` allows mismatch to continue as an experiment.
+- New evidence file:
+
+  ```text
+  soc-preflight.log
+  ```
+
 Current blocker for this path:
 
 - Confirm the target HarmonyOS PC's actual Kirin SoC/runtime identity.
