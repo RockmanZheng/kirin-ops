@@ -115,10 +115,10 @@ hdc 可用
 hdc list targets
 export SN="<target-id>"
 
-hdc -t "$SN" shell "ls -l /data/local/tmp/model_run_tool && /data/local/tmp/model_run_tool --help"
+hdc -t "$SN" shell "ls -l /data/local/tmp/model_run_tool && (/data/local/tmp/model_run_tool --version 2>&1 || /data/local/tmp/model_run_tool --help 2>&1)"
 ```
 
-如果 `--help` 不支持也没关系，至少要确认文件存在并可执行。
+这里不能只看文件是否存在。runner 必须能实际启动，并输出 version 或 usage。否则后面的 `.omc` 测试还没进入模型加载阶段。
 
 ## 在另一台 HarmonyOS PC 上执行
 
@@ -236,9 +236,9 @@ scripts/test-naked-omc-vetest.sh
 2. 记录 hdc binary、版本、checkserver、list targets -v。
 3. 从本地 .omc 提取 embedded SoC metadata。
 4. 从目标机器 param/uname/param ls/uname/process/runtime lib 扫描收集设备信息。
-5. 从 model_run_tool --help 和 strings 收集 runner 信息。
+5. 从 model_run_tool hash、file/readelf、--version、--help 和 strings 收集 runner 信息。
 6. 如果能确认 model SoC 和 target SoC 不匹配，严格模式下 fail fast。
-7. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
+7. 实际启动 /data/local/tmp/model_run_tool 做 preflight；如果 runner 不存在、不可访问、架构不匹配或动态链接失败，直接 fail fast。
 8. 创建/确认 /data/local/tmp。
 9. 发送 .omc 和一个或多个输入 .bin。
 10. 记录运行前远端模型/输入/输出文件状态和 hash。
@@ -354,6 +354,56 @@ model_run_tool not found or not executable
 
 处理方式：先从同事机器/内部环境拿到该工具，并放到目标设备 `/data/local/tmp/model_run_tool`，确保有执行权限。
 
+`model_run_tool` 路径看似存在，但实际执行失败：
+
+```text
+/bin/sh: /data/local/tmp/model_run_tool: inaccessible or not found
+```
+
+含义：
+
+```text
+这不是 SobelCustom.omc 的平台兼容性错误。
+runner 二进制还没有成功启动，测试没有进入模型加载阶段。
+```
+
+常见原因：
+
+```text
+/data/local/tmp/model_run_tool 在这台 target 上不存在或不可访问
+model_run_tool 是为另一种 ABI/系统镜像构建的
+ELF interpreter / 动态库依赖在这台 target 上不存在
+/data/local/tmp 的执行策略或权限和另一台机器不同
+```
+
+最小诊断命令：
+
+```bash
+export SN="SH25BHS4036"
+
+hdc -t "$SN" shell "uname -a; id; ls -l /data/local/tmp/model_run_tool; chmod 755 /data/local/tmp/model_run_tool 2>/dev/null || true; /data/local/tmp/model_run_tool --version 2>&1 || /data/local/tmp/model_run_tool --help 2>&1; echo runner_rc=\$?"
+```
+
+如果目标机没有 `file/readelf`，把 runner 拉回控制端检查：
+
+```bash
+hdc -t "$SN" file recv /data/local/tmp/model_run_tool /tmp/model_run_tool.$SN
+sha256sum /tmp/model_run_tool.$SN
+file /tmp/model_run_tool.$SN
+readelf -l /tmp/model_run_tool.$SN | grep -i interpreter || true
+```
+
+如果另一台 target 上 runner 能正常启动，可以对比两个 runner 是否同一个文件：
+
+```bash
+for SN in SH236HS0488 SH25BHS4036; do
+  hdc -t "$SN" file recv /data/local/tmp/model_run_tool /tmp/model_run_tool.$SN || true
+done
+
+sha256sum /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null || true
+file /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null || true
+```
+
 找不到设备：
 
 ```text
@@ -449,6 +499,9 @@ hdc -t "$SN" shell "param get const.product.model"
 hdc -t "$SN" shell "param get const.product.name"
 hdc -t "$SN" shell "param get const.product.software.version"
 hdc -t "$SN" shell "param get const.ohos.apiversion"
+hdc -t "$SN" shell "param get ohos.boot.chiptype"
+hdc -t "$SN" shell "param get const.product.soc"
+hdc -t "$SN" shell "param get const.soc_version"
 hdc -t "$SN" shell "uname -a"
 ```
 

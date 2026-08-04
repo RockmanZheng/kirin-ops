@@ -49,6 +49,7 @@ OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
 LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline}"
+RUNNER_LAUNCH_ERROR_RE="${RUNNER_LAUNCH_ERROR_RE:-inaccessible or not found|no such file|not found|permission denied|exec format error|cannot execute binary file|cannot link executable|bad elf|invalid elf|library .*not found|linker .*not found}"
 
 usage() {
   cat <<'USAGE'
@@ -341,6 +342,7 @@ write_failure_summary_if_missing() {
     echo "compare_result=${COMPARE_RESULT:-NOT_REACHED}"
     echo "run_failed=${RUN_FAILED:-1}"
     echo "run_failure_reason=${RUN_FAILURE_REASON:-${failure_message}}"
+    echo "runner_launch_failed=${RUNNER_LAUNCH_FAILED:-0}"
     echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
     echo "capture_logs=${CAPTURE_LOGS:-}"
     echo "collect_diagnostics=${COLLECT_DIAGS:-}"
@@ -780,6 +782,7 @@ COLLECT_DIAGS=${COLLECT_DIAGS}
 EXPORT_LOGS=${EXPORT_LOGS}
 EXPORT_TEXT=${EXPORT_TEXT}
 RAW_HILOG_MODE=${RAW_HILOG_MODE}
+RUNNER_LAUNCH_ERROR_RE=${RUNNER_LAUNCH_ERROR_RE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 STRICT=${STRICT}
@@ -836,6 +839,10 @@ COMPARE_LOG="${EVIDENCE_DIR}/compare.log"
 OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
 OUTPUT_REMOTE="${DEVICE_DIR}/${OUTPUT_NAME}"
 EVIDENCE_INITIALIZED=1
+RUNNER_LAUNCH_FAILED=0
+MODEL_LOAD_FAILED=0
+RUN_FAILED=0
+RUN_FAILURE_REASON=""
 
 log "evidence dir: ${EVIDENCE_DIR}"
 log "evidence archive: ${EVIDENCE_ARCHIVE}"
@@ -916,6 +923,7 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
     const.product.manufacturer \
     const.product.software.version \
     const.ohos.apiversion \
+    ohos.boot.chiptype \
     const.product.soc \
     const.product.socversion \
     const.soc_version \
@@ -936,10 +944,10 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
 } | tee "${TARGET_INFO}" >/dev/null
 
 # shellcheck disable=SC2016
-TARGET_DIAG_CMD='echo "### identity"; id 2>&1 || true; whoami 2>&1 || true; pwd 2>&1 || true; echo; echo "### kernel"; uname -a 2>&1 || true; echo; echo "### hdc shell path"; echo "$PATH" 2>&1 || true; echo; echo "### selected params"; for key in const.product.model const.product.name const.product.device const.product.board const.product.hardwareversion const.product.manufacturer const.product.software.version const.ohos.apiversion const.product.soc const.product.socversion const.soc_version ro.product.model ro.product.name ro.product.device ro.product.board ro.board.platform ro.hardware ro.soc.model ro.soc.manufacturer ro.build.version.incremental ro.build.version.release; do printf "%s=" "$key"; param get "$key" 2>&1 || true; done; echo; echo "### param scan"; param ls 2>&1 | grep -Ei "kirin|soc|chip|npu|hiai|ai|product|hardware|board|device|model|nn|neural" | head -400 || true; echo; echo "### process scan"; (ps -ef 2>/dev/null || ps -A 2>/dev/null || true) | grep -Ei "hiai|nn|npu|ai|model|neural" | head -160 || true; echo; echo "### storage"; df -h /data /data/local/tmp 2>&1 || true; echo; echo "### likely runtime libs"; for d in /system/lib64 /system/lib /vendor/lib64 /vendor/lib /chip_prod/lib64 /chip_prod/lib /data/local/tmp; do [ -d "$d" ] || continue; echo "# $d"; ls -l "$d"/libhiai* "$d"/libneural_network* "$d"/*nn* "$d"/*NN* 2>/dev/null || true; done'
+TARGET_DIAG_CMD='echo "### identity"; id 2>&1 || true; whoami 2>&1 || true; pwd 2>&1 || true; echo; echo "### kernel"; uname -a 2>&1 || true; echo; echo "### hdc shell path"; echo "$PATH" 2>&1 || true; echo; echo "### selected params"; for key in const.product.model const.product.name const.product.device const.product.board const.product.hardwareversion const.product.manufacturer const.product.software.version const.ohos.apiversion ohos.boot.chiptype const.product.soc const.product.socversion const.soc_version ro.product.model ro.product.name ro.product.device ro.product.board ro.board.platform ro.hardware ro.soc.model ro.soc.manufacturer ro.build.version.incremental ro.build.version.release; do printf "%s=" "$key"; param get "$key" 2>&1 || true; done; echo; echo "### param scan"; param ls 2>&1 | grep -Ei "kirin|soc|chip|npu|hiai|ai|product|hardware|board|device|model|nn|neural" | head -400 || true; echo; echo "### process scan"; (ps -ef 2>/dev/null || ps -A 2>/dev/null || true) | grep -Ei "hiai|nn|npu|ai|model|neural" | head -160 || true; echo; echo "### storage"; df -h /data /data/local/tmp 2>&1 || true; echo; echo "### mount info"; mount 2>&1 | grep -E " /data |/data/local|tmp" | head -80 || true; echo; echo "### likely runtime libs"; for d in /system/lib64 /system/lib /vendor/lib64 /vendor/lib /chip_prod/lib64 /chip_prod/lib /data/local/tmp; do [ -d "$d" ] || continue; echo "# $d"; ls -l "$d"/libhiai* "$d"/libneural_network* "$d"/*nn* "$d"/*NN* 2>/dev/null || true; done'
 collect_remote_diag "target diagnostics" "${TARGET_DIAG_LOG}" "${TARGET_DIAG_CMD}"
 
-RUNNER_DIAG_CMD="echo '### runner path'; ls -l $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; echo; echo '### runner help'; $(remote_quote "${MODEL_RUN_TOOL}") --help 2>&1 || true; echo; echo '### runner strings'; if command -v strings >/dev/null 2>&1; then strings $(remote_quote "${MODEL_RUN_TOOL}") 2>/dev/null | grep -Ei 'usage|--model|--input|--output|soc|kirin|hiai|HIAI_F|nn|neural|cann|omc|offline|compat|compil|build|executor|device|version|model_run_tool|error|status|return' | head -220 || true; else echo 'strings unavailable'; fi"
+RUNNER_DIAG_CMD="echo '### runner path'; ls -l $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; echo; echo '### runner hash'; if command -v sha256sum >/dev/null 2>&1; then sha256sum $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; elif command -v md5sum >/dev/null 2>&1; then md5sum $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; else echo 'sha256sum/md5sum unavailable'; fi; echo; echo '### runner file type'; if command -v file >/dev/null 2>&1; then file $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; else echo 'file unavailable'; fi; echo; echo '### runner interpreter'; if command -v readelf >/dev/null 2>&1; then readelf -l $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 | grep -Ei 'interpreter|program interpreter' || true; else echo 'readelf unavailable'; fi; echo; echo '### runner version'; $(remote_quote "${MODEL_RUN_TOOL}") --version 2>&1 || true; echo; echo '### runner help'; $(remote_quote "${MODEL_RUN_TOOL}") --help 2>&1 || true; echo; echo '### runner strings'; if command -v strings >/dev/null 2>&1; then strings $(remote_quote "${MODEL_RUN_TOOL}") 2>/dev/null | grep -Ei 'usage|--model|--input|--output|soc|kirin|hiai|HIAI_F|nn|neural|cann|omc|offline|compat|compil|build|executor|device|version|model_run_tool|error|status|return' | head -220 || true; else echo 'strings unavailable'; fi"
 collect_remote_diag "runner diagnostics" "${RUNNER_DIAG_LOG}" "${RUNNER_DIAG_CMD}"
 
 SOC_CHECK_RESULT="SKIPPED"
@@ -992,12 +1000,19 @@ fi
 
 if [ "${CHECK_TOOL}" -eq 1 ]; then
   log "checking model_run_tool"
+  TOOL_CHECK_CMD="echo '### runner path'; ls -l $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; echo; echo '### runner launch probe'; $(remote_quote "${MODEL_RUN_TOOL}") --version 2>&1 || $(remote_quote "${MODEL_RUN_TOOL}") --help 2>&1 || true"
   set +e
-  "${HDC_TARGET[@]}" shell "test -x $(remote_quote "${MODEL_RUN_TOOL}") && ls -l $(remote_quote "${MODEL_RUN_TOOL}")" > "${TOOL_CHECK_LOG}" 2>&1
+  "${HDC_TARGET[@]}" shell "${TOOL_CHECK_CMD}" > "${TOOL_CHECK_LOG}" 2>&1
   TOOL_STATUS=$?
   set -e
-  if [ "${TOOL_STATUS}" -ne 0 ]; then
-    die "model_run_tool not found or not executable: ${MODEL_RUN_TOOL}. Inspect ${TOOL_CHECK_LOG}"
+  if [ "${TOOL_STATUS}" -ne 0 ] || file_matches "${TOOL_CHECK_LOG}" "${RUNNER_LAUNCH_ERROR_RE}"; then
+    RUNNER_LAUNCH_FAILED=1
+    RUN_FAILED=1
+    RUN_FAILURE_REASON="model_run_tool launch failed"
+    die "model_run_tool is missing, inaccessible, or cannot be launched on this target: ${MODEL_RUN_TOOL}. Inspect ${TOOL_CHECK_LOG} and ${RUNNER_DIAG_LOG}"
+  fi
+  if ! file_matches "${TOOL_CHECK_LOG}" 'model_run_tool|usage|version'; then
+    warn "model_run_tool launch probe produced no recognizable usage/version output; inspect ${TOOL_CHECK_LOG}"
   fi
 fi
 
@@ -1085,16 +1100,19 @@ set +e
 "${HDC_TARGET[@]}" shell "${RUN_CMD}" 2>&1 | tee "${RUN_LOG}"
 RUN_STATUS=${PIPESTATUS[0]}
 set -e
-MODEL_LOAD_FAILED=0
-RUN_FAILED=0
-RUN_FAILURE_REASON=""
 if file_matches "${RUN_LOG}" 'Load model .* failed|loading model .* failed|Model Process ret failed|ConstructWithOfflineModelBuffer failed|OH_NNCompilation_Build failed'; then
   MODEL_LOAD_FAILED=1
   warn "model_run_tool reached the model loader, but the model failed to load. This points at OMC/target SoC/runtime compatibility, not HAP signing or aa start."
 fi
+if file_matches "${RUN_LOG}" "${RUNNER_LAUNCH_ERROR_RE}"; then
+  RUNNER_LAUNCH_FAILED=1
+  warn "model_run_tool could not launch on this target. This points at a missing/incompatible runner binary or target execution environment, not OMC model compatibility."
+fi
 if [ "${RUN_STATUS}" -ne 0 ] || file_matches "${RUN_LOG}" 'error:|failed|No such file|not found|permission denied|Error Code'; then
   RUN_FAILED=1
-  if [ "${MODEL_LOAD_FAILED}" -eq 1 ]; then
+  if [ "${RUNNER_LAUNCH_FAILED}" -eq 1 ]; then
+    RUN_FAILURE_REASON="model_run_tool launch failed"
+  elif [ "${MODEL_LOAD_FAILED}" -eq 1 ]; then
     RUN_FAILURE_REASON="model load failed"
   else
     RUN_FAILURE_REASON="model_run_tool failed"
@@ -1176,6 +1194,7 @@ fi
   echo "compare_result=${COMPARE_RESULT}"
   echo "run_failed=${RUN_FAILED:-0}"
   echo "run_failure_reason=${RUN_FAILURE_REASON:-}"
+  echo "runner_launch_failed=${RUNNER_LAUNCH_FAILED:-0}"
   echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
   echo "capture_logs=${CAPTURE_LOGS}"
   echo "collect_diagnostics=${COLLECT_DIAGS}"
