@@ -68,6 +68,7 @@ Options:
                          Seconds to wait for "hdc hilog -r". Default: 5
   --skip-tool-check      Do not check model_run_tool before running.
   --skip-soc-check       Do not preflight-check .omc SoC metadata against the target.
+                         Use only when intentionally running despite unknown/mismatched SoC.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
   --no-logs              Do not capture hilog.
@@ -577,7 +578,10 @@ if [ "${CHECK_SOC}" -eq 1 ]; then
   elif [ -z "${TARGET_SOC_VERSIONS}" ]; then
     SOC_CHECK_RESULT="UNKNOWN_TARGET_SOC"
     echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
-    warn "could not infer target SoC from device params; pass --target-soc to make the compatibility preflight deterministic"
+    if [ "${STRICT}" -eq 1 ]; then
+      die "could not infer target SoC from device params while model SoC is known ($(format_soc_set "${MODEL_SOC_VERSIONS}")). Pass --target-soc, or use --skip-soc-check/--no-strict to run anyway. Inspect ${SOC_CHECK_LOG} and ${TARGET_INFO}"
+    fi
+    warn "could not infer target SoC from device params; continuing because --no-strict is set. Pass --target-soc to make the compatibility preflight deterministic"
   elif soc_sets_intersect "${MODEL_SOC_VERSIONS}" "${TARGET_SOC_VERSIONS}"; then
     SOC_CHECK_RESULT="PASS"
     echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"

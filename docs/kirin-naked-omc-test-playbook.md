@@ -349,7 +349,7 @@ soc-preflight.log       记录 model SoC、target SoC、检查结果
 model SoC 和 target SoC 都已知且匹配: PASS
 model SoC 和 target SoC 都已知但不匹配: 严格模式 fail fast
 model SoC 未知: WARN 后继续
-target SoC 自动检测不到: WARN 后继续，建议传 --target-soc
+model SoC 已知但 target SoC 自动检测不到: 严格模式 fail fast，要求传 --target-soc
 ```
 
 常用参数：
@@ -357,7 +357,7 @@ target SoC 自动检测不到: WARN 后继续，建议传 --target-soc
 ```bash
 --target-soc kirin9020   # 显式声明目标 SoC，让 preflight 变成确定性检查
 --skip-soc-check         # 临时跳过 SoC preflight
---no-strict              # SoC mismatch 只报警，继续跑，方便做反证实验
+--no-strict              # target SoC 未知或 mismatch 时只报警，继续跑，方便做反证实验
 ```
 
 如果目标 HarmonyOS PC 的 Kirin/NPU runtime 不是这个 target，或者当前 runtime 不接受这个 codelab 预编译模型，就会在 load 阶段失败。下一步要区分 runner 问题和模型兼容问题：

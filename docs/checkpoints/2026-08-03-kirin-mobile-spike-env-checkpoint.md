@@ -719,7 +719,7 @@ Interpretation:
 - Behavior:
   - If both model SoC and target SoC are known and match, continue.
   - If both are known and mismatch, strict mode fails fast before sending files.
-  - If target SoC cannot be inferred automatically, warn and continue; pass `--target-soc` to make the check decisive.
+  - If model SoC is known but target SoC cannot be inferred automatically, strict mode fails fast before sending files; pass `--target-soc` to make the check decisive.
   - `--skip-soc-check` disables the preflight; `--no-strict` allows mismatch to continue as an experiment.
 - New evidence file:
 
