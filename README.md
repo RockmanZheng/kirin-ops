@@ -24,3 +24,5 @@ Run the first real-device spike on a HarmonyOS phone with a Kirin chip:
 The public standard `aarch64` CANN toolkit installs, but it has not compiled the repo's `kirinx90` Sobel custom operator. The repo-documented `mobile-station` toolkit is still the target environment for this spike.
 
 See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the current state and evidence.
+
+For physical-device validation commands, see `docs/kirin-real-device-test-playbook.md`.
