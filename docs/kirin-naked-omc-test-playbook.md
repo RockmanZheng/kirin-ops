@@ -120,6 +120,14 @@ hdc -t "$SN" shell "ls -l /data/local/tmp/model_run_tool && (/data/local/tmp/mod
 
 这里不能只看文件是否存在。runner 必须能实际启动，并输出 version 或 usage。否则后面的 `.omc` 测试还没进入模型加载阶段。
 
+检查芯片类型：
+
+```bash
+hdc -t "$SN" shell "param get ohos.boot.chiptype"
+```
+
+如果这条命令返回 `Kirin9020`，脚本会把设备侧 chiptype 作为 target SoC 来源。`--target-soc` 只作为设备参数缺失时的补充，或作为人工断言；如果人工断言和设备参数冲突，严格模式会直接失败。
+
 ## 在另一台 HarmonyOS PC 上执行
 
 先拿代码和脚本：
@@ -487,7 +495,7 @@ model SoC 已知但 target SoC 自动检测不到: 严格模式 fail fast，要�
 常用参数：
 
 ```bash
---target-soc kirin9020   # 显式声明目标 SoC，让 preflight 变成确定性检查
+--target-soc kirin9020   # 设备参数读不到 SoC 时的人工补充；设备能读到 ohos.boot.chiptype 时以设备侧为准
 --skip-soc-check         # 临时跳过 SoC preflight
 --no-strict              # target SoC 未知或 mismatch 时只报警，继续跑，方便做反证实验
 ```

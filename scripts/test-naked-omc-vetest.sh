@@ -70,7 +70,7 @@ Options:
   --golden PATH          Expected output .bin file. Overrides --bundle-dir default.
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
   --target-soc SOC       Expected target SoC, e.g. kirin9020, KirinX90, Kirin9030.
-                         Use this when the device does not expose SoC via param get.
+                         Fallback/assertion when device params do not expose the SoC.
   --model-run-tool PATH  Remote runner path. Default: /data/local/tmp/model_run_tool
   --device-dir PATH      Remote work dir. Default: /data/local/tmp
   --output-name NAME     Remote output file name to pull. Default: output_0
@@ -139,6 +139,16 @@ file_matches() {
 
   [ -s "${file}" ] || return 1
   grep -Eiq "${pattern}" "${file}"
+}
+
+print_log_excerpt() {
+  local label="$1"
+  local path="$2"
+  local max_lines="${3:-120}"
+
+  [ -s "${path}" ] || return 0
+  warn "${label} excerpt (${path}, first ${max_lines} lines):"
+  sed -n "1,${max_lines}p" "${path}" | sed 's/^/[kirin-naked-omc]   /' >&2 || true
 }
 
 sha256_file() {
@@ -333,6 +343,9 @@ write_failure_summary_if_missing() {
     echo "check_soc=${CHECK_SOC:-}"
     echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS:-}")"
     echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS:-}")"
+    echo "target_soc_source=${TARGET_SOC_SOURCE:-}"
+    echo "device_soc_versions=$(format_soc_set "${DEVICE_SOC_VERSIONS:-}")"
+    echo "cli_target_soc_versions=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS:-}")"
     echo "soc_check_result=${SOC_CHECK_RESULT:-NOT_REACHED}"
     echo "output_name=${OUTPUT_NAME:-}"
     echo "output_remote=${OUTPUT_REMOTE:-}"
@@ -952,26 +965,48 @@ collect_remote_diag "runner diagnostics" "${RUNNER_DIAG_LOG}" "${RUNNER_DIAG_CMD
 
 SOC_CHECK_RESULT="SKIPPED"
 TARGET_SOC_VERSIONS=""
+TARGET_SOC_SOURCE=""
+DEVICE_SOC_VERSIONS=""
+CLI_TARGET_SOC_VERSIONS=""
 if [ "${CHECK_SOC}" -eq 1 ]; then
+  TARGET_SOC_SCAN_FILES=("${TARGET_INFO}")
+  if [ -f "${TARGET_DIAG_LOG}" ]; then
+    TARGET_SOC_SCAN_FILES+=("${TARGET_DIAG_LOG}")
+  fi
+  DEVICE_SOC_VERSIONS="$(cat "${TARGET_SOC_SCAN_FILES[@]}" | extract_soc_versions_from_text || true)"
+
   if [ -n "${TARGET_SOC}" ]; then
-    TARGET_SOC_VERSIONS="$(printf '%s\n' "${TARGET_SOC}" | extract_soc_versions_from_text || true)"
-    [ -n "${TARGET_SOC_VERSIONS}" ] || die "--target-soc must look like a Kirin target, for example kirin9020 or KirinX90"
+    CLI_TARGET_SOC_VERSIONS="$(printf '%s\n' "${TARGET_SOC}" | extract_soc_versions_from_text || true)"
+    [ -n "${CLI_TARGET_SOC_VERSIONS}" ] || die "--target-soc must look like a Kirin target, for example kirin9020 or KirinX90"
+  fi
+
+  if [ -n "${DEVICE_SOC_VERSIONS}" ]; then
+    TARGET_SOC_VERSIONS="${DEVICE_SOC_VERSIONS}"
+    TARGET_SOC_SOURCE="target-info,target-diagnostics"
+  elif [ -n "${CLI_TARGET_SOC_VERSIONS}" ]; then
+    TARGET_SOC_VERSIONS="${CLI_TARGET_SOC_VERSIONS}"
     TARGET_SOC_SOURCE="cli/env"
   else
-    TARGET_SOC_SCAN_FILES=("${TARGET_INFO}")
-    if [ -f "${TARGET_DIAG_LOG}" ]; then
-      TARGET_SOC_SCAN_FILES+=("${TARGET_DIAG_LOG}")
-    fi
-    TARGET_SOC_VERSIONS="$(cat "${TARGET_SOC_SCAN_FILES[@]}" | extract_soc_versions_from_text || true)"
-    TARGET_SOC_SOURCE="target-info,target-diagnostics"
+    TARGET_SOC_SOURCE="unresolved"
   fi
 
   {
     echo "check_soc=${CHECK_SOC}"
     echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS}")"
     echo "target_soc_source=${TARGET_SOC_SOURCE}"
+    echo "device_soc_versions=$(format_soc_set "${DEVICE_SOC_VERSIONS}")"
+    echo "cli_target_soc_versions=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS}")"
     echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS}")"
   } > "${SOC_CHECK_LOG}"
+
+  if [ -n "${DEVICE_SOC_VERSIONS}" ] && [ -n "${CLI_TARGET_SOC_VERSIONS}" ] && ! soc_sets_intersect "${DEVICE_SOC_VERSIONS}" "${CLI_TARGET_SOC_VERSIONS}"; then
+    SOC_CHECK_RESULT="TARGET_CLI_MISMATCH"
+    echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
+    if [ "${STRICT}" -eq 1 ]; then
+      die "target SoC assertion does not match device params: device=$(format_soc_set "${DEVICE_SOC_VERSIONS}") cli=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS}"). Inspect ${SOC_CHECK_LOG}"
+    fi
+    warn "target SoC assertion does not match device params: device=$(format_soc_set "${DEVICE_SOC_VERSIONS}") cli=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS}"); continuing because --no-strict is set"
+  fi
 
   if [ -z "${MODEL_SOC_VERSIONS}" ]; then
     SOC_CHECK_RESULT="UNKNOWN_MODEL_SOC"
@@ -987,7 +1022,7 @@ if [ "${CHECK_SOC}" -eq 1 ]; then
   elif soc_sets_intersect "${MODEL_SOC_VERSIONS}" "${TARGET_SOC_VERSIONS}"; then
     SOC_CHECK_RESULT="PASS"
     echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
-    log "soc preflight passed: model=$(format_soc_set "${MODEL_SOC_VERSIONS}") target=$(format_soc_set "${TARGET_SOC_VERSIONS}")"
+    log "soc preflight passed: model=$(format_soc_set "${MODEL_SOC_VERSIONS}") target=$(format_soc_set "${TARGET_SOC_VERSIONS}") source=${TARGET_SOC_SOURCE}"
   else
     SOC_CHECK_RESULT="MISMATCH"
     echo "result=${SOC_CHECK_RESULT}" >> "${SOC_CHECK_LOG}"
@@ -1009,6 +1044,7 @@ if [ "${CHECK_TOOL}" -eq 1 ]; then
     RUNNER_LAUNCH_FAILED=1
     RUN_FAILED=1
     RUN_FAILURE_REASON="model_run_tool launch failed"
+    print_log_excerpt "model_run_tool check" "${TOOL_CHECK_LOG}" 160
     die "model_run_tool is missing, inaccessible, or cannot be launched on this target: ${MODEL_RUN_TOOL}. Inspect ${TOOL_CHECK_LOG} and ${RUNNER_DIAG_LOG}"
   fi
   if ! file_matches "${TOOL_CHECK_LOG}" 'model_run_tool|usage|version'; then
@@ -1185,6 +1221,9 @@ fi
   echo "check_soc=${CHECK_SOC}"
   echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS:-}")"
   echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS:-}")"
+  echo "target_soc_source=${TARGET_SOC_SOURCE:-}"
+  echo "device_soc_versions=$(format_soc_set "${DEVICE_SOC_VERSIONS:-}")"
+  echo "cli_target_soc_versions=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS:-}")"
   echo "soc_check_result=${SOC_CHECK_RESULT:-SKIPPED}"
   echo "output_name=${OUTPUT_NAME}"
   echo "output_remote=${OUTPUT_REMOTE}"
