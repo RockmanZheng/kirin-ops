@@ -79,6 +79,14 @@ run_cmd() {
   "$@"
 }
 
+file_matches() {
+  local file="$1"
+  local pattern="$2"
+
+  [ -s "${file}" ] || return 1
+  grep -Eiq "${pattern}" "${file}"
+}
+
 run_with_timeout() {
   local seconds="$1"
   local output_file="$2"
@@ -341,9 +349,20 @@ if [ "${INSTALL}" -eq 1 ]; then
   "${HDC_TARGET[@]}" install -r "${HAP}" 2>&1 | tee "${INSTALL_LOG}"
   INSTALL_STATUS=${PIPESTATUS[0]}
   set -e
+  INSTALL_FAILED=0
   if [ "${INSTALL_STATUS}" -ne 0 ]; then
+    warn "hdc install exited with status ${INSTALL_STATUS}"
+    INSTALL_FAILED=1
+  elif file_matches "${INSTALL_LOG}" 'msg:error|error:|failed to install|install failed|no signature file|Error Code'; then
+    warn "hdc install output contains failure text even though hdc returned 0"
+    INSTALL_FAILED=1
+  fi
+  if [ "${INSTALL_FAILED}" -eq 1 ]; then
     warn "install failed. If this is an unsigned HAP, regenerate a DevEco debug/signed HAP."
-    exit "${INSTALL_STATUS}"
+    if [ "${INSTALL_STATUS}" -ne 0 ]; then
+      exit "${INSTALL_STATUS}"
+    fi
+    exit 1
   fi
 else
   log "skipping install"
@@ -383,10 +402,21 @@ if [ "${START_APP}" -eq 1 ]; then
   "${HDC_TARGET[@]}" shell aa start -a "${ABILITY}" -b "${BUNDLE}" 2>&1 | tee "${START_LOG}"
   START_STATUS=${PIPESTATUS[0]}
   set -e
+  START_FAILED=0
   if [ "${START_STATUS}" -ne 0 ]; then
+    warn "aa start exited with status ${START_STATUS}"
+    START_FAILED=1
+  elif file_matches "${START_LOG}" 'error:|failed to start ability|Error Code|does not exist|not installed'; then
+    warn "aa start output contains failure text even though hdc returned 0"
+    START_FAILED=1
+  fi
+  if [ "${START_FAILED}" -eq 1 ]; then
     warn "aa start failed; try launching the app manually on the HarmonyOS PC/device"
     if [ "${STRICT}" -eq 1 ]; then
-      exit "${START_STATUS}"
+      if [ "${START_STATUS}" -ne 0 ]; then
+        exit "${START_STATUS}"
+      fi
+      exit 1
     fi
   fi
 else

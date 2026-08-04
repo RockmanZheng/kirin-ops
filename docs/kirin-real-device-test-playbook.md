@@ -371,6 +371,14 @@ Likely cause: unsigned HAP or wrong signing profile.
 Action: open the project in DevEco, configure debug signing, Build/Run, or export a signed HAP.
 ```
 
+Observed example:
+
+```text
+error: failed to install bundle. code:9568320 error: no signature file.
+```
+
+This means the uploaded prerelease `entry-default-unsigned.hap` is not installable on that target as-is. It must be signed in DevEco or replaced with a target-accepted debug/signed HAP before app launch and NPU inference can be tested.
+
 Installation fails with SDK/compatibility errors:
 
 ```text
