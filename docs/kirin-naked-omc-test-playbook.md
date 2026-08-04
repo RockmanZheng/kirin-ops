@@ -248,7 +248,8 @@ scripts/test-naked-omc-vetest.sh
 14. 拉回 /data/local/tmp/output_0。
 15. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
 16. 写 evidence summary。
-17. 自动写 evidence-files.txt，打包 `<evidence-dir>.tgz`，并生成 `<evidence-dir>.tgz.sha256`。
+17. 自动写可复制粘贴的 `evidence-report.txt`。
+18. 自动写 evidence-files.txt，打包 `<evidence-dir>.tgz`，并生成 `<evidence-dir>.tgz.sha256`。
 ```
 
 Evidence 默认目录：
@@ -279,10 +280,19 @@ compare.log
 hilog.raw.log
 hilog.filtered.log
 output_0
+evidence-report.txt
 evidence-files.txt
 ../<timestamp>.tgz
 ../<timestamp>.tgz.sha256
 ```
+
+如果内网机器不能上传附件，直接复制这个单文件：
+
+```bash
+cat artifacts/naked-omc-runs/<timestamp>/evidence-report.txt
+```
+
+这个 report 会把关键文本日志按 section 拼在一起。`output_0` 这类二进制输出不会内联，只通过 hash、大小和远端文件列表记录。
 
 默认 archive 路径是：
 
@@ -295,6 +305,7 @@ evidence-files.txt
 ```text
 evidence_archive=...
 evidence_manifest=...
+evidence_text=...
 ```
 
 默认不把 `hilog.raw.log` 放进 archive，除非 `hilog.filtered.log` 为空。这样避免正常情况下打出很大的压缩包。如果诊断需要完整 raw hilog，可以显式打开：
@@ -307,6 +318,12 @@ scripts/test-naked-omc-vetest.sh ... --include-raw-hilog
 
 ```bash
 scripts/test-naked-omc-vetest.sh ... --no-export-logs
+```
+
+如果只想关掉 copy/paste text report，但仍保留 `.tgz`：
+
+```bash
+scripts/test-naked-omc-vetest.sh ... --no-export-text
 ```
 
 ## 成功标准
@@ -461,7 +478,7 @@ remote-files-after-run.log
 hilog.filtered.log
 ```
 
-现在脚本默认已经把这些文件打进 `<evidence-dir>.tgz`，通常直接上传这个 `.tgz` 和旁边的 `.sha256` 即可。
+现在脚本默认已经把这些文件拼进 `evidence-report.txt`，也打进 `<evidence-dir>.tgz`。不能上传文件时，复制 `evidence-report.txt`；能上传文件时，上传 `.tgz` 和旁边的 `.sha256`。
 
 Compare 失败：
 

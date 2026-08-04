@@ -27,12 +27,14 @@ HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 EVIDENCE_ARCHIVE="${EVIDENCE_ARCHIVE:-}"
+EVIDENCE_TEXT="${EVIDENCE_TEXT:-}"
 CAPTURE_LOGS=1
 HILOG_CLEAR=1
 CHECK_TOOL=1
 CHECK_SOC=1
 COLLECT_DIAGS=1
 EXPORT_LOGS=1
+EXPORT_TEXT=1
 RAW_HILOG_MODE="${RAW_HILOG_MODE:-auto}"
 PULL_OUTPUT=1
 COMPARE=1
@@ -42,6 +44,7 @@ EVIDENCE_INITIALIZED=0
 EXPORT_DONE=0
 EXPORT_IN_PROGRESS=0
 EVIDENCE_ARCHIVE_EXPLICIT=0
+EVIDENCE_TEXT_EXPLICIT=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
@@ -74,6 +77,7 @@ Options:
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
   --evidence-archive PATH
                          Evidence archive path. Default: <evidence-dir>.tgz
+  --evidence-text PATH   Copy/paste text report path. Default: <evidence-dir>/evidence-report.txt
   --no-clear-logs        Do not run "hdc shell hilog -r" before capture.
   --hilog-clear-timeout N
                          Seconds to wait for "hdc shell hilog -r". Default: 5
@@ -82,7 +86,8 @@ Options:
   --skip-soc-check       Do not preflight-check .omc SoC metadata against the target.
                          Use only when intentionally running despite unknown/mismatched SoC.
   --no-diagnostics       Do not collect extra target/runner/file diagnostics.
-  --no-export-logs       Do not create evidence-files.txt or the .tgz evidence archive.
+  --no-export-logs       Do not create evidence-files.txt, the .tgz archive, or the text report.
+  --no-export-text       Do not create the copy/paste evidence-report.txt.
   --include-raw-hilog    Always include hilog.raw.log in the evidence archive.
   --no-raw-hilog         Never include hilog.raw.log in the evidence archive.
                          Default: include raw hilog only when filtered hilog is empty.
@@ -343,6 +348,7 @@ write_failure_summary_if_missing() {
     echo "raw_hilog_mode=${RAW_HILOG_MODE:-}"
     echo "evidence_manifest=${EVIDENCE_MANIFEST:-}"
     echo "evidence_archive=${EVIDENCE_ARCHIVE:-}"
+    echo "evidence_text=${EVIDENCE_TEXT:-}"
     echo "diag_timeout=${DIAG_TIMEOUT:-}"
     echo "strict=${STRICT:-}"
     echo "result=EARLY_FAILURE"
@@ -353,6 +359,89 @@ write_failure_summary_if_missing() {
       cat "${EVIDENCE_DIR}/host-inputs.sha256"
     fi
   } > "${SUMMARY}"
+}
+
+append_evidence_text_file() {
+  local path="$1"
+  local rel
+  local size
+
+  [ "${EXPORT_TEXT:-0}" -eq 1 ] || return 0
+  [ -n "${path}" ] || return 0
+  [ -e "${path}" ] || return 0
+
+  case "${path}" in
+    "${EVIDENCE_DIR}/"*)
+      rel="${path#"${EVIDENCE_DIR}/"}"
+      ;;
+    *)
+      rel="${path}"
+      ;;
+  esac
+
+  size="$(wc -c < "${path}" | tr -d '[:space:]')"
+  {
+    echo
+    echo "================================================================================"
+    echo "FILE: ${rel}"
+    echo "PATH: ${path}"
+    echo "SIZE_BYTES: ${size}"
+    echo "================================================================================"
+    if [ -s "${path}" ]; then
+      sed -e 's/\r$//' "${path}" || true
+    else
+      echo "<empty>"
+    fi
+  } >> "${EVIDENCE_TEXT}"
+}
+
+write_evidence_text_report() {
+  local text_dir
+
+  [ "${EXPORT_TEXT:-0}" -eq 1 ] || return 0
+  [ -n "${EVIDENCE_TEXT:-}" ] || return 0
+
+  text_dir="$(dirname "${EVIDENCE_TEXT}")"
+  mkdir -p "${text_dir}"
+
+  {
+    echo "KIRIN_NAKED_OMC_EVIDENCE_REPORT"
+    echo "generated_utc=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "evidence_dir=${EVIDENCE_DIR}"
+    echo "evidence_archive=${EVIDENCE_ARCHIVE}"
+    echo "raw_hilog_mode=${RAW_HILOG_MODE}"
+    echo
+    echo "Copy/paste this whole file into the GitHub issue when artifact upload is unavailable."
+    echo "Binary outputs are not inlined; use hashes and file listings below for binary evidence."
+  } > "${EVIDENCE_TEXT}"
+
+  append_evidence_text_file "${SUMMARY:-}"
+  append_evidence_text_file "${HDC_INFO:-}"
+  append_evidence_text_file "${TARGETS_FILE:-}"
+  append_evidence_text_file "${TARGET_INFO:-}"
+  append_evidence_text_file "${SOC_CHECK_LOG:-}"
+  append_evidence_text_file "${TARGET_DIAG_LOG:-}"
+  append_evidence_text_file "${RUNNER_DIAG_LOG:-}"
+  append_evidence_text_file "${MODEL_INFO:-}"
+  append_evidence_text_file "${TOOL_CHECK_LOG:-}"
+  append_evidence_text_file "${MKDIR_LOG:-}"
+  append_evidence_text_file "${REMOTE_CLEAN_LOG:-}"
+  append_evidence_text_file "${SEND_OMC_LOG:-}"
+  append_evidence_text_file "${SEND_INPUT_LOG:-}"
+  append_evidence_text_file "${RUN_LOG:-}"
+  append_evidence_text_file "${REMOTE_FILES_BEFORE_LOG:-}"
+  append_evidence_text_file "${REMOTE_FILES_AFTER_LOG:-}"
+  append_evidence_text_file "${REMOTE_LIST_LOG:-}"
+  append_evidence_text_file "${PULL_OUTPUT_LOG:-}"
+  append_evidence_text_file "${COMPARE_LOG:-}"
+  append_evidence_text_file "${HILOG_CLEAR_LOG:-}"
+  append_evidence_text_file "${HILOG_FILTERED:-}"
+  append_evidence_text_file "${EVIDENCE_DIR}/host-inputs.sha256"
+  append_evidence_text_file "${EVIDENCE_DIR}/output.sha256"
+
+  if [ "${RAW_HILOG_MODE}" = "always" ] || { [ "${RAW_HILOG_MODE}" = "auto" ] && [ -f "${HILOG_RAW:-}" ] && [ ! -s "${HILOG_FILTERED:-}" ]; }; then
+    append_evidence_text_file "${HILOG_RAW:-}"
+  fi
 }
 
 write_evidence_manifest() {
@@ -382,6 +471,7 @@ write_evidence_manifest() {
   append_evidence_file "${EVIDENCE_DIR}/host-inputs.sha256"
   append_evidence_file "${EVIDENCE_DIR}/output.sha256"
   append_evidence_file "${OUTPUT_LOCAL:-}"
+  append_evidence_file "${EVIDENCE_TEXT:-}"
 
   if [ "${RAW_HILOG_MODE}" = "always" ] || { [ "${RAW_HILOG_MODE}" = "auto" ] && [ -f "${HILOG_RAW:-}" ] && [ ! -s "${HILOG_FILTERED:-}" ]; }; then
     append_evidence_file "${HILOG_RAW:-}"
@@ -402,6 +492,11 @@ export_evidence_bundle() {
   [ "${EXPORT_IN_PROGRESS:-0}" -eq 0 ] || return 0
 
   EXPORT_IN_PROGRESS=1
+
+  write_evidence_text_report
+  if [ -s "${EVIDENCE_TEXT:-}" ]; then
+    log "evidence text report: ${EVIDENCE_TEXT}"
+  fi
 
   if ! command -v tar >/dev/null 2>&1; then
     warn "tar not found; skipping evidence archive export"
@@ -507,6 +602,12 @@ while [ "$#" -gt 0 ]; do
       EVIDENCE_ARCHIVE_EXPLICIT=1
       shift 2
       ;;
+    --evidence-text)
+      [ "$#" -ge 2 ] || die "--evidence-text requires a path"
+      EVIDENCE_TEXT="$2"
+      EVIDENCE_TEXT_EXPLICIT=1
+      shift 2
+      ;;
     --no-clear-logs)
       HILOG_CLEAR=0
       shift
@@ -535,6 +636,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-export-logs)
       EXPORT_LOGS=0
+      shift
+      ;;
+    --no-export-text)
+      EXPORT_TEXT=0
       shift
       ;;
     --include-raw-hilog)
@@ -645,6 +750,9 @@ fi
 if [ -z "${EVIDENCE_ARCHIVE}" ]; then
   EVIDENCE_ARCHIVE="${EVIDENCE_DIR}.tgz"
 fi
+if [ -z "${EVIDENCE_TEXT}" ]; then
+  EVIDENCE_TEXT="${EVIDENCE_DIR}/evidence-report.txt"
+fi
 
 if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF
@@ -663,12 +771,14 @@ HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 DIAG_TIMEOUT=${DIAG_TIMEOUT}
 EVIDENCE_DIR=${EVIDENCE_DIR}
 EVIDENCE_ARCHIVE=${EVIDENCE_ARCHIVE}
+EVIDENCE_TEXT=${EVIDENCE_TEXT}
 CAPTURE_LOGS=${CAPTURE_LOGS}
 HILOG_CLEAR=${HILOG_CLEAR}
 CHECK_TOOL=${CHECK_TOOL}
 CHECK_SOC=${CHECK_SOC}
 COLLECT_DIAGS=${COLLECT_DIAGS}
 EXPORT_LOGS=${EXPORT_LOGS}
+EXPORT_TEXT=${EXPORT_TEXT}
 RAW_HILOG_MODE=${RAW_HILOG_MODE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
@@ -682,6 +792,9 @@ mkdir -p "${EVIDENCE_DIR}"
 EVIDENCE_DIR="$(cd "${EVIDENCE_DIR}" && pwd -P)"
 if [ "${EVIDENCE_ARCHIVE_EXPLICIT}" -eq 0 ]; then
   EVIDENCE_ARCHIVE="${EVIDENCE_DIR}.tgz"
+fi
+if [ "${EVIDENCE_TEXT_EXPLICIT}" -eq 0 ]; then
+  EVIDENCE_TEXT="${EVIDENCE_DIR}/evidence-report.txt"
 fi
 
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC:-<missing>}"
@@ -1067,9 +1180,11 @@ fi
   echo "capture_logs=${CAPTURE_LOGS}"
   echo "collect_diagnostics=${COLLECT_DIAGS}"
   echo "export_logs=${EXPORT_LOGS}"
+  echo "export_text=${EXPORT_TEXT}"
   echo "raw_hilog_mode=${RAW_HILOG_MODE}"
   echo "evidence_manifest=${EVIDENCE_MANIFEST}"
   echo "evidence_archive=${EVIDENCE_ARCHIVE}"
+  echo "evidence_text=${EVIDENCE_TEXT}"
   echo "diag_timeout=${DIAG_TIMEOUT}"
   echo "strict=${STRICT}"
   echo "result=${RESULT}"

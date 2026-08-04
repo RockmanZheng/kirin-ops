@@ -753,9 +753,11 @@ Current blocker for this path:
 - Model-load failures no longer exit immediately. In strict mode the script now records post-run file state, filtered hilog, and `summary.txt`, then exits nonzero with links to the relevant evidence files.
 - HDC log clearing was corrected from the previously observed problematic `hdc hilog -r` style to `hdc shell "hilog -r"` with a timeout. `--no-clear-logs` remains available for machines where hilog clearing still hangs.
 - Evidence export is now part of the script post-run pipeline:
+  - The script creates a single copy/paste text report at `<evidence-dir>/evidence-report.txt`.
   - The script writes `evidence-files.txt`.
   - The script creates `<evidence-dir>.tgz` plus `<evidence-dir>.tgz.sha256`.
-  - Strict model-load failures and strict SoC preflight failures export the evidence bundle before exiting nonzero.
+  - Strict model-load failures and strict SoC preflight failures export the text report and evidence bundle before exiting nonzero.
+  - Binary outputs such as `output_0` are not inlined into the text report; the report includes hashes, sizes, and file listings instead.
   - `hilog.raw.log` is included only when `hilog.filtered.log` is empty by default; use `--include-raw-hilog` to force raw log export or `--no-raw-hilog` to suppress it.
 - Local validation completed:
 
@@ -769,6 +771,8 @@ Current blocker for this path:
   fake hdc clear-log path uses hdc shell "hilog -r"
   fake hdc model-load-failure path creates evidence .tgz and .sha256 before strict failure
   fake hdc strict preflight failure creates early summary and evidence .tgz before exiting
+  fake hdc model-load-failure path creates evidence-report.txt with key log sections
+  fake hdc strict preflight failure creates evidence-report.txt before exiting
   ```
 
 Next decisive evidence needed from the real HarmonyOS PC:
@@ -783,7 +787,7 @@ Next decisive evidence needed from the real HarmonyOS PC:
      --no-clear-logs
    ```
 
-2. If Sobel still fails at model load, attach the generated `<evidence-dir>.tgz` and `<evidence-dir>.tgz.sha256`.
+2. If Sobel still fails at model load, copy/paste `<evidence-dir>/evidence-report.txt` into the issue. If file upload is available, attach the generated `<evidence-dir>.tgz` and `<evidence-dir>.tgz.sha256`.
 3. Run a known-good `gelu_fp16.omc` or `add_1.omc` on the same target with the same script. If known-good models pass while Sobel fails, the runner/runtime path is proven and the Sobel prebuilt model must be regenerated or replaced for the target SoC/runtime.
 
 ## Re-entry Commands
