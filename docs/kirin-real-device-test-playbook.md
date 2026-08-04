@@ -119,6 +119,43 @@ entry-default-unsigned.hap: OK
 
 Use this released unsigned HAP for transfer, package inspection, or targets that allow unsigned installation. If the target rejects it, rebuild/sign in DevEco and set `HAP` to the signed HAP path instead.
 
+## Sign A Debug HAP In DevEco
+
+For the first physical-device spike, use DevEco automatic/debug signing first. Manual signing is only worth doing after automatic signing is blocked.
+
+Open the prebuilt demo project that already contains `SobelCustom.omc`:
+
+```bash
+cd /absolute/path/to/kirin-ops
+scripts/open-deveco-soble.sh
+```
+
+The helper opens this project when the prebuilt `.omc` is present:
+
+```text
+artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo
+```
+
+In DevEco Studio:
+
+1. Sign in with a Huawei developer account if prompted.
+2. Open the project-level `Signing Configs` UI.
+3. Enable automatic/debug signing for the app.
+4. Keep `bundleName` as `com.example.hdc_sobel_demo` unless DevEco/AppGallery Connect requires a bundle owned by the account.
+5. Connect the HarmonyOS PC/device so the generated debug profile matches the target.
+6. Build or Run the app from DevEco.
+
+Do not commit signing files or generated credentials. The repo ignores local signing material such as `*.p12`, `*.cer`, `*.p7b`, `*.jks`, and `signing/`.
+
+Find the signed HAP after DevEco builds:
+
+```bash
+find artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo/entry/build \
+  -name '*.hap' -print
+```
+
+Use the signed/debug HAP path for device testing. Do not use `entry-default-unsigned.hap` unless the target explicitly accepts unsigned packages.
+
 ## Prepare Variables
 
 Set these on the host that will install and verify the app:

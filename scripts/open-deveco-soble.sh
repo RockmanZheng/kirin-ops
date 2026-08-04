@@ -4,8 +4,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_DIR="${ROOT}/cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble"
+PREBUILT_PROJECT_DIR="${ROOT}/artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo"
+SOURCE_PROJECT_DIR="${ROOT}/cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble"
+PROJECT_DIR="${KIRIN_SOBLE_PROJECT_DIR:-}"
 DEVECO_APP_DIR="${DEVECO_STUDIO_APP_DIR:-/Applications/DevEco-Studio.app}"
+
+if [ -z "${PROJECT_DIR}" ]; then
+  if [ -f "${PREBUILT_PROJECT_DIR}/entry/src/main/resources/rawfile/SobelCustom.omc" ]; then
+    PROJECT_DIR="${PREBUILT_PROJECT_DIR}"
+  else
+    PROJECT_DIR="${SOURCE_PROJECT_DIR}"
+  fi
+fi
 
 if [ ! -d "${DEVECO_APP_DIR}" ]; then
   echo "DevEco Studio not found at ${DEVECO_APP_DIR}" >&2

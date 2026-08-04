@@ -25,6 +25,16 @@ standard-cann-aarch64/
 *.tar.gz
 *.tgz
 
+# Local signing material. Never commit certificates, profiles, or passwords.
+signing/
+*.p12
+*.p7b
+*.p7s
+*.cer
+*.csr
+*.jks
+*.keystore
+
 # Nested checkout metadata and generated local state.
 cann-recipes-harmony-infer/.git/
 cann-recipes-harmony-infer/harmony_infer/harmony_os_next/Soble/.idea/
