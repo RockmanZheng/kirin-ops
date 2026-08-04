@@ -115,6 +115,27 @@ remote omc: /data1/z84378291/artifacts/kirin9030_sobel_script_smoke_20260804_024
 [Empty]
 ```
 
+### 2026-08-04 Release Upload
+
+Created GitHub prerelease:
+
+```text
+tag: kirin9030-sobel-custom-2026-08-04
+url: https://github.com/RockmanZheng/kirin-ops/releases/tag/kirin9030-sobel-custom-2026-08-04
+target: main
+```
+
+Uploaded assets:
+
+```text
+kirin9030-sobel-custom-2026-08-04.zip
+  sha256: 894c0ace26802bb08720c645dc0b92e09545ac81ab97bc3b223a2d38857b9167
+kirin9030-sobel-custom-2026-08-04.omc
+  sha256: 8524eaae52bb251f4ce39688b098d9ef09588cb14ccfbedf811f376cb6f90ff8
+kirin9030-sobel-custom-2026-08-04.zip.sha256
+kirin9030-sobel-custom-2026-08-04.omc.sha256
+```
+
 Confirmed so far:
 
 - The target HarmonyOS device reports `uname -m` as `aarch64`.
