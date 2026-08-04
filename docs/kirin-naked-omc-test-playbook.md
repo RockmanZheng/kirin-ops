@@ -170,7 +170,7 @@ scripts/test-naked-omc-vetest.sh \
 `--no-clear-logs` 是因为我们已经见过部分机器上 `hdc hilog -r` 可能卡住。
 脚本现在默认使用 `hdc shell "hilog -r"` 清理缓存日志；OpenHarmony HDC 文档里的清日志示例也是这个形式。`--no-clear-logs` 仍然保留，方便绕过目标机上任何 hilog 行为差异。
 
-如果已经知道目标 SoC，建议显式传入，脚本会在传文件和运行前做确定性 preflight：
+如果设备能通过 `ohos.boot.chiptype` 报出 SoC，脚本会优先使用设备侧结果。`--target-soc` 可以作为额外断言；设备侧缺失时，它会作为 fallback：
 
 ```bash
 scripts/test-naked-omc-vetest.sh \
@@ -180,7 +180,7 @@ scripts/test-naked-omc-vetest.sh \
   --no-clear-logs
 ```
 
-当前这个 Sobel bundle 的 `.omc` 是 `kirin9020`。如果你传 `--target-soc kirin9030` 或 `--target-soc KirinX90`，严格模式下脚本会 fail fast，不会继续发送文件和运行模型。
+当前这个 Sobel bundle 的 `.omc` 是 `kirin9020`。如果设备侧 `ohos.boot.chiptype` 与人工传入的 `--target-soc` 冲突，或 target SoC 与模型 SoC 冲突，严格模式下脚本会 fail fast，不会继续发送文件和运行模型。
 
 ## 手工命令
 
@@ -410,6 +410,36 @@ done
 
 sha256sum /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null || true
 file /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null || true
+```
+
+如果 `SH236HS0488` 上的 runner 已知能启动，而 `SH25BHS4036` 缺 runner，可以先复制到自己的目标目录，不覆盖公共 `/data/local/tmp/model_run_tool`：
+
+```bash
+SOURCE_SN="SH236HS0488"
+TARGET_SN="SH25BHS4036"
+REMOTE_DIR="/data/local/tmp/z84378291"
+LOCAL_RUNNER="/tmp/model_run_tool.${SOURCE_SN}"
+
+hdc -t "$SOURCE_SN" file recv /data/local/tmp/model_run_tool "$LOCAL_RUNNER"
+sha256sum "$LOCAL_RUNNER" 2>/dev/null || shasum -a 256 "$LOCAL_RUNNER"
+file "$LOCAL_RUNNER"
+readelf -l "$LOCAL_RUNNER" 2>/dev/null | grep -i interpreter || true
+
+hdc -t "$TARGET_SN" shell "mkdir -p $REMOTE_DIR"
+hdc -t "$TARGET_SN" file send "$LOCAL_RUNNER" "$REMOTE_DIR/model_run_tool"
+hdc -t "$TARGET_SN" shell "chmod 755 $REMOTE_DIR/model_run_tool; $REMOTE_DIR/model_run_tool --version 2>&1 || $REMOTE_DIR/model_run_tool --help 2>&1; echo runner_rc=\$?"
+```
+
+然后用自己的 runner 路径跑 Sobel：
+
+```bash
+scripts/test-naked-omc-vetest.sh \
+  --target "$TARGET_SN" \
+  --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
+  --device-dir "$REMOTE_DIR" \
+  --model-run-tool "$REMOTE_DIR/model_run_tool" \
+  --target-soc Kirin9020 \
+  --no-clear-logs
 ```
 
 找不到设备：
