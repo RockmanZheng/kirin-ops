@@ -14,20 +14,29 @@ This repository is intentionally scoped to portable scripts, setup notes, checkp
 
 Run the first real-device spike on a HarmonyOS phone with a Kirin chip:
 
-1. Fast path: run any chip-matched prebuilt `.omc` bundle on a real device through `/data/local/tmp/model_run_tool`.
-2. Current Kirin9030 priority: get a known-good `.omc + input.bin` bundle, for example GELU/Add extracted from `/data/model` on the internal HarmonyOS target.
-3. Full toolchain path: build a custom operator on Linux and convert it with ATC/OMG for the actual target SoC/runtime.
+1. Current Kirin9030 build path: use the x86 mobile-station CANN 9.0.0 container on `npu-group-3` to build SobelCustom and convert it to `.omc`.
+2. Package the generated `.omc + input + golden` as a naked OMC bundle.
+3. Run the bundle on the `aarch64` HarmonyOS target through `/data/local/tmp/model_run_tool`.
 4. Validate NPU inference and collect device evidence.
 
 The previous HAP install + `aa start` workflow is not the current operator/kernel test path. It was removed from the active scripts after the real HarmonyOS PC history showed that local testing uses `model_run_tool` directly.
 
 ## Known Boundary
 
-The public standard `aarch64` CANN toolkit installs, but it has not compiled the repo's `kirinx90` Sobel custom operator. The repo-documented `mobile-station` toolkit is still the target environment for this spike.
+The public standard `aarch64` CANN toolkit installs, but it does not compile the current Kirin9030 Sobel custom operator path. The known-good compile/conversion host is the x86 mobile-station toolkit in `z84378291-kirin-mobile-x86`.
 
 See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the current state and evidence.
+See `docs/kirin9030-sobel-mobile-station-build-plan.md` for the Kirin9030 Sobel build plan, compatibility patch, and evidence.
 
 For the naked `.omc` `model_run_tool` path, see `docs/kirin-naked-omc-test-playbook.md`.
+
+Build a Kirin9030 SobelCustom OMC from the mobile-station host:
+
+```bash
+scripts/build-kirin9030-sobel-mobile-station.sh \
+  --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
+  --pull-to-dir artifacts/remote-pulled/kirin9030-sobel-2026-08-04
+```
 
 Scripted naked OMC `model_run_tool` wrapper:
 

@@ -3,11 +3,7 @@
 
 set -euo pipefail
 
-if [ -n "${BASH_SOURCE:-}" ]; then
-  SCRIPT_PATH="${BASH_SOURCE[0]}"
-else
-  SCRIPT_PATH="${(%):-%x}"
-fi
+SCRIPT_PATH="${BASH_SOURCE[0]:-${0}}"
 SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 KIRIN_OPS_HOME="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMMAND_LINE_TOOLS_DIR="${KIRIN_COMMAND_LINE_TOOLS_DIR:-${KIRIN_OPS_HOME}/command-line-tools}"

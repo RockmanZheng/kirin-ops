@@ -17,6 +17,8 @@ Provide an isolated Docker workspace for Kirin/CANN operator build exploration w
 - Docker network: `z84378291-kirin-cann-net`
 - Docker container: `z84378291-kirin-cann91`
 - Base image: `cann-9.1.0:v2`
+- x86 mobile-station container: `z84378291-kirin-mobile-x86`
+- x86 mobile-station CANN: `/opt/Ascend/cann-9.0.0`
 
 ## Container Shape
 
@@ -90,8 +92,36 @@ From local workspace `/Users/zhenglewen/projects/kirin-ops`:
 ```bash
 scripts/remote-cann-shell.sh
 scripts/remote-cann-exec.sh 'pwd && command -v atc && command -v ccec'
+scripts/remote-mobile-station-shell.sh
+scripts/remote-mobile-station-exec.sh 'uname -m && command -v atc && command -v bisheng'
 ```
 
 ## Caveat
 
 This is a CANN 9.1 server/NPU container on a 910B machine. It is the correct isolated build convention for this host, but it does not yet prove Kirin/mobile-station `.omc` compatibility. The next technical check is whether this toolchain accepts the repo's Kirin targets such as `KirinX90` / `kirinx90`.
+
+## Mobile-Station Result
+
+The x86 mobile-station path is now the known-good Kirin9030 compile/conversion
+host path for SobelCustom:
+
+```text
+container: z84378291-kirin-mobile-x86
+platform: linux/amd64
+CANN: /opt/Ascend/cann-9.0.0
+ATC: /opt/Ascend/cann-9.0.0/bin/atc
+BiSheng: /opt/Ascend/cann-9.0.0/bin/bisheng
+custom OPP path: /opt/Ascend/cann-9.0.0/opp/vendors/customize
+```
+
+The actual HarmonyOS phone target remains `aarch64`; the x86 container is only
+the model-build host.
+
+The first successful artifact was:
+
+```text
+/data1/z84378291/artifacts/kirin9030_sobel_mobile_x86_hardened_20260804_092334/model_conversion/SobelCustom_kirin9030.omc
+```
+
+See `docs/kirin9030-sobel-mobile-station-build-plan.md` for the repeatable
+scripted flow and evidence.
