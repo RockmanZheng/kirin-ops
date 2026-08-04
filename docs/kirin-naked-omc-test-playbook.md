@@ -418,16 +418,11 @@ file /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null
 SOURCE_SN="SH236HS0488"
 TARGET_SN="SH25BHS4036"
 REMOTE_DIR="/data/local/tmp/z84378291"
-LOCAL_RUNNER="/tmp/model_run_tool.${SOURCE_SN}"
 
-hdc -t "$SOURCE_SN" file recv /data/local/tmp/model_run_tool "$LOCAL_RUNNER"
-sha256sum "$LOCAL_RUNNER" 2>/dev/null || shasum -a 256 "$LOCAL_RUNNER"
-file "$LOCAL_RUNNER"
-readelf -l "$LOCAL_RUNNER" 2>/dev/null | grep -i interpreter || true
-
-hdc -t "$TARGET_SN" shell "mkdir -p $REMOTE_DIR"
-hdc -t "$TARGET_SN" file send "$LOCAL_RUNNER" "$REMOTE_DIR/model_run_tool"
-hdc -t "$TARGET_SN" shell "chmod 755 $REMOTE_DIR/model_run_tool; $REMOTE_DIR/model_run_tool --version 2>&1 || $REMOTE_DIR/model_run_tool --help 2>&1; echo runner_rc=\$?"
+scripts/bootstrap-model-run-tool.sh \
+  --source-target "$SOURCE_SN" \
+  --dest-target "$TARGET_SN" \
+  --dest-path "$REMOTE_DIR/model_run_tool"
 ```
 
 然后用自己的 runner 路径跑 Sobel：
@@ -440,6 +435,20 @@ scripts/test-naked-omc-vetest.sh \
   --model-run-tool "$REMOTE_DIR/model_run_tool" \
   --target-soc Kirin9020 \
   --no-clear-logs
+```
+
+脚本内部展开后等价于：
+
+```bash
+LOCAL_RUNNER="/tmp/model_run_tool.${SOURCE_SN}"
+
+hdc -t "$SOURCE_SN" shell "ls -l /data/local/tmp/model_run_tool; /data/local/tmp/model_run_tool --version 2>&1 || /data/local/tmp/model_run_tool --help 2>&1"
+hdc -t "$SOURCE_SN" file recv /data/local/tmp/model_run_tool "$LOCAL_RUNNER"
+
+hdc -t "$TARGET_SN" shell "mkdir -p $REMOTE_DIR"
+hdc -t "$TARGET_SN" file send "$LOCAL_RUNNER" "$REMOTE_DIR/model_run_tool"
+hdc -t "$TARGET_SN" shell "chmod 755 $REMOTE_DIR/model_run_tool"
+hdc -t "$TARGET_SN" shell "$REMOTE_DIR/model_run_tool --version 2>&1 || $REMOTE_DIR/model_run_tool --help 2>&1"
 ```
 
 找不到设备：
