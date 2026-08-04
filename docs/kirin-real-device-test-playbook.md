@@ -33,6 +33,16 @@ Current command-line build output:
 artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo/entry/build/default/outputs/default/entry-default-unsigned.hap
 ```
 
+Published prerelease artifact:
+
+```text
+release: https://github.com/RockmanZheng/kirin-ops/releases/tag/kirin-sobel-hap-2026-08-03
+tag: kirin-sobel-hap-2026-08-03
+target commit: a1ab36aeb9cf2f1fa85218365fd62846ff99554f
+asset: entry-default-unsigned.hap
+sha256: 5705dc6f945f2bbc72af72f7fafa6553c7bd3ffe8b84e2de87cc15dc27d179ba
+```
+
 Important: `entry-default-unsigned.hap` is unsigned. A real HarmonyOS device will usually reject it. For device installation, prefer a DevEco-built debug/signed HAP, or configure `signingConfigs` and generate a signed HAP.
 
 ## Preconditions
@@ -42,6 +52,7 @@ Important: `entry-default-unsigned.hap` is unsigned. A real HarmonyOS device wil
 - Developer mode / HDC debugging is enabled on the target device.
 - The host machine running these commands has `hdc`.
 - The HAP is signed for the target device, unless the target test system explicitly allows unsigned packages.
+- Optional but useful: `gh` is authenticated to GitHub for downloading private release assets.
 
 Canonical topology:
 
@@ -50,6 +61,63 @@ host with hdc + HAP  ->  HarmonyOS target device
 ```
 
 If the Kirin HarmonyOS PC is itself the target, the same validation still needs an HDC-capable shell/host path or an equivalent DevEco/App Installer path. The commands below assume an HDC host controlling a target device.
+
+## Get Scripts And HAP On A Fresh Host
+
+The helper scripts and playbook are uploaded to the private repo on `main`. Clone the ops repo first:
+
+```bash
+git clone git@github.com-kirin-ops:RockmanZheng/kirin-ops.git
+cd kirin-ops
+git checkout main
+```
+
+If you do not use the repo-specific deploy-key SSH alias, clone with any authenticated GitHub method that works on that host:
+
+```bash
+git clone https://github.com/RockmanZheng/kirin-ops.git
+cd kirin-ops
+```
+
+Confirm the expected scripts are present:
+
+```bash
+ls -l scripts/test-harmonyos-pc.sh scripts/local-macos-env.sh scripts/remote-cann-shell.sh scripts/remote-cann-exec.sh
+```
+
+Download the uploaded HAP and checksum from the prerelease:
+
+```bash
+gh auth status -h github.com
+mkdir -p artifacts/release-downloads/kirin-sobel-hap-2026-08-03
+gh release download kirin-sobel-hap-2026-08-03 \
+  --repo RockmanZheng/kirin-ops \
+  --pattern 'entry-default-unsigned.hap*' \
+  --dir artifacts/release-downloads/kirin-sobel-hap-2026-08-03
+```
+
+Because `RockmanZheng/kirin-ops` is private, direct release asset downloads require GitHub authentication through `gh`, a browser session, or an API token. A deploy key is enough for `git clone` over SSH, but it does not authenticate HTTPS release asset downloads.
+
+Verify the downloaded HAP:
+
+```bash
+cd artifacts/release-downloads/kirin-sobel-hap-2026-08-03
+if command -v shasum >/dev/null 2>&1; then
+  shasum -a 256 -c entry-default-unsigned.hap.sha256
+else
+  sha256sum -c entry-default-unsigned.hap.sha256
+fi
+export HAP="$PWD/entry-default-unsigned.hap"
+cd -
+```
+
+Expected checksum result:
+
+```text
+entry-default-unsigned.hap: OK
+```
+
+Use this released unsigned HAP for transfer, package inspection, or targets that allow unsigned installation. If the target rejects it, rebuild/sign in DevEco and set `HAP` to the signed HAP path instead.
 
 ## Prepare Variables
 
@@ -68,14 +136,20 @@ For the unsigned local artifact on this Mac:
 export HAP="/Users/zhenglewen/projects/kirin-ops/artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo/entry/build/default/outputs/default/entry-default-unsigned.hap"
 ```
 
+For the uploaded release artifact after running the download commands above:
+
+```bash
+export HAP="/absolute/path/to/kirin-ops/artifacts/release-downloads/kirin-sobel-hap-2026-08-03/entry-default-unsigned.hap"
+```
+
 Use that unsigned artifact only for package inspection or for systems that permit unsigned HAP installation.
 
 ## Scripted Run
 
-The repo includes an executable wrapper for the install/start/log workflow:
+The repo includes an executable wrapper for the install/start/log workflow. It is committed and pushed on `main`:
 
 ```bash
-cd /Users/zhenglewen/projects/kirin-ops
+cd /absolute/path/to/kirin-ops
 scripts/test-harmonyos-pc.sh --hap /absolute/path/to/entry-default-signed.hap
 ```
 
@@ -107,6 +181,16 @@ For a package/install smoke that should not fail on missing runtime markers:
 ```bash
 scripts/test-harmonyos-pc.sh --hap /absolute/path/to/entry-default-signed.hap --no-strict
 ```
+
+For the downloaded prerelease HAP:
+
+```bash
+scripts/test-harmonyos-pc.sh \
+  --hap artifacts/release-downloads/kirin-sobel-hap-2026-08-03/entry-default-unsigned.hap \
+  --no-strict
+```
+
+Remove `--no-strict` only when the target can install the package and you are ready to tap `NPU推理` during the log capture window.
 
 ## Verify HAP Contents Before Transfer
 
