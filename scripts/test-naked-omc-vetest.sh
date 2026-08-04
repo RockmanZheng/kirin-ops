@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Push a naked OMC plus input data to a HarmonyOS CANN vetest runner and execute it.
+# Run a naked CANN .omc model on a HarmonyOS target with model_run_tool.
+#
+# This follows the real physical-machine history captured in issue #1:
+#   hdc file send <model.omc> /data/local/tmp/<model.omc>
+#   hdc file send <input.bin> /data/local/tmp/<input.bin>
+#   hdc shell "/data/local/tmp/model_run_tool --model=... --input=... --output_dir=/data/local/tmp/"
+#   hdc file recv /data/local/tmp/output_0 ./output.bin
 
 set -euo pipefail
 
@@ -12,17 +18,15 @@ OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
 TARGET="${TARGET:-}"
-RUNNER_HAP="${RUNNER_HAP:-}"
-BUNDLE="${BUNDLE:-com.example.naticvetestdemo}"
-ABILITY="${ABILITY:-EntryAbility}"
-DEVICE_DIR="${DEVICE_DIR:-/mnt/hmdfs/100/account/device_view/local/files/Docs/Download/com.example.naticvetestdemo}"
-OUTPUT_NAME="${OUTPUT_NAME:-output0.bin}"
+MODEL_RUN_TOOL="${MODEL_RUN_TOOL:-/data/local/tmp/model_run_tool}"
+DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp}"
+OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
 LOG_SECONDS="${LOG_SECONDS:-30}"
 HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 CAPTURE_LOGS=1
 HILOG_CLEAR=1
-CHECK_RUNNER=1
+CHECK_TOOL=1
 PULL_OUTPUT=1
 COMPARE=1
 STRICT=1
@@ -30,52 +34,54 @@ DRY_RUN=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
-LOG_RE="${LOG_RE:-naticvetestdemo|omPath|output0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error}"
+LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors}"
 
 usage() {
   cat <<'USAGE'
 usage: scripts/test-naked-omc-vetest.sh [options]
 
-Sends a naked .omc file and an input .bin to a HarmonyOS native CANN
-vetest runner, starts the runner with --ps path/--ps omPath, pulls output0.bin,
-and optionally compares it with a golden file.
+Runs a naked .omc file on a HarmonyOS target using a native CLI runner:
+
+  /data/local/tmp/model_run_tool \
+    --model=/data/local/tmp/<model.omc> \
+    --input=/data/local/tmp/<input.bin> \
+    --output_dir=/data/local/tmp/
 
 Options:
   --bundle-dir DIR       Directory containing SobelCustom.omc, x.bin, and optional y.bin.
-  --omc PATH             OMC model file. Overrides --bundle-dir default.
-  --input PATH           Input .bin file. Overrides --bundle-dir default.
+  --omc PATH             Local OMC model file. Overrides --bundle-dir default.
+  --input PATHS          Local input .bin path, or comma-separated local input paths.
+                         Multi-input example: x1.bin,x2.bin
   --golden PATH          Expected output .bin file. Overrides --bundle-dir default.
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
-  --runner-hap PATH      Optional signed runner HAP to install before running.
-  --bundle NAME          Runner bundle name. Default: com.example.naticvetestdemo
-  --ability NAME         Runner ability name. Default: EntryAbility
-  --device-dir PATH      Device documents directory used by the runner.
-  --output-name NAME     Output file name produced by the runner. Default: output0.bin
+  --model-run-tool PATH  Remote runner path. Default: /data/local/tmp/model_run_tool
+  --device-dir PATH      Remote work dir. Default: /data/local/tmp
+  --output-name NAME     Remote output file name to pull. Default: output_0
   --log-seconds N        Log capture window after runner start. Default: 30
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
   --no-clear-logs        Do not run "hdc hilog -r" before capture.
   --hilog-clear-timeout N
                          Seconds to wait for "hdc hilog -r". Default: 5
-  --skip-runner-check    Do not check whether the runner bundle is installed.
-  --no-pull-output       Do not pull output0.bin from the device.
+  --skip-tool-check      Do not check model_run_tool before running.
+  --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
   --no-logs              Do not capture hilog.
   --no-strict            Do not exit nonzero when output/log validation is incomplete.
   --dry-run              Print resolved settings and exit.
   -h, --help             Show this help.
 
-Typical run after downloading the release bundle:
+Typical Sobel run on the HarmonyOS PC from issue #1:
   scripts/test-naked-omc-vetest.sh \
-    --target <target-id> \
-    --bundle-dir /path/to/kirin-sobel-naked-omc-2026-08-03 \
+    --target SH236HS0488 \
+    --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
     --no-clear-logs
 
-If the vetest runner is not installed yet and you have a signed runner HAP:
+Multi-input example, matching the observed model_run_tool convention:
   scripts/test-naked-omc-vetest.sh \
-    --target <target-id> \
-    --runner-hap /path/to/entry-default-signed.hap \
-    --bundle-dir /path/to/kirin-sobel-naked-omc-2026-08-03 \
-    --no-clear-logs
+    --target SH236HS0488 \
+    --omc /path/to/add_1.omc \
+    --input /path/to/add_x1.bin,/path/to/add_x2.bin \
+    --no-compare
 USAGE
 }
 
@@ -110,6 +116,10 @@ sha256_file() {
   else
     return 1
   fi
+}
+
+remote_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 run_with_timeout() {
@@ -148,7 +158,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --input)
-      [ "$#" -ge 2 ] || die "--input requires a path"
+      [ "$#" -ge 2 ] || die "--input requires a path or comma-separated paths"
       INPUT="$2"
       INPUT_EXPLICIT=1
       shift 2
@@ -164,19 +174,9 @@ while [ "$#" -gt 0 ]; do
       TARGET="$2"
       shift 2
       ;;
-    --runner-hap)
-      [ "$#" -ge 2 ] || die "--runner-hap requires a path"
-      RUNNER_HAP="$2"
-      shift 2
-      ;;
-    --bundle)
-      [ "$#" -ge 2 ] || die "--bundle requires a bundle name"
-      BUNDLE="$2"
-      shift 2
-      ;;
-    --ability)
-      [ "$#" -ge 2 ] || die "--ability requires an ability name"
-      ABILITY="$2"
+    --model-run-tool)
+      [ "$#" -ge 2 ] || die "--model-run-tool requires a path"
+      MODEL_RUN_TOOL="$2"
       shift 2
       ;;
     --device-dir)
@@ -208,8 +208,8 @@ while [ "$#" -gt 0 ]; do
       HILOG_CLEAR_TIMEOUT="$2"
       shift 2
       ;;
-    --skip-runner-check)
-      CHECK_RUNNER=0
+    --skip-tool-check)
+      CHECK_TOOL=0
       shift
       ;;
     --no-pull-output)
@@ -245,11 +245,15 @@ done
 if [ -n "${BUNDLE_DIR}" ]; then
   [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${BUNDLE_DIR}/SobelCustom.omc"
   [ "${INPUT_EXPLICIT}" -eq 1 ] || INPUT="${BUNDLE_DIR}/x.bin"
-  [ "${GOLDEN_EXPLICIT}" -eq 1 ] || GOLDEN="${BUNDLE_DIR}/y.bin"
+  if [ "${GOLDEN_EXPLICIT}" -eq 0 ] && [ "${OMC_EXPLICIT}" -eq 0 ] && [ "${INPUT_EXPLICIT}" -eq 0 ]; then
+    GOLDEN="${BUNDLE_DIR}/y.bin"
+  fi
 elif [ -d "${DEFAULT_BUNDLE_DIR}" ]; then
   [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${DEFAULT_BUNDLE_DIR}/SobelCustom.omc"
   [ "${INPUT_EXPLICIT}" -eq 1 ] || INPUT="${DEFAULT_BUNDLE_DIR}/x.bin"
-  [ "${GOLDEN_EXPLICIT}" -eq 1 ] || GOLDEN="${DEFAULT_BUNDLE_DIR}/y.bin"
+  if [ "${GOLDEN_EXPLICIT}" -eq 0 ] && [ "${OMC_EXPLICIT}" -eq 0 ] && [ "${INPUT_EXPLICIT}" -eq 0 ]; then
+    GOLDEN="${DEFAULT_BUNDLE_DIR}/y.bin"
+  fi
 elif [ -z "${OMC}" ] && [ -f "${PREBUILT_OMC}" ]; then
   OMC="${PREBUILT_OMC}"
 fi
@@ -275,7 +279,6 @@ if [ "${HILOG_CLEAR_TIMEOUT}" -lt 1 ]; then
 fi
 
 if ! command -v hdc >/dev/null 2>&1 && [ -f "${ROOT}/scripts/local-macos-env.sh" ]; then
-  # On this Mac workspace, hdc is usually provided by command-line-tools.
   # shellcheck disable=SC1091
   source "${ROOT}/scripts/local-macos-env.sh" >/dev/null 2>&1 || true
 fi
@@ -291,14 +294,12 @@ fi
 if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF
 HDC_BIN=${HDC_BIN}
+TARGET=${TARGET:-<auto>}
+MODEL_RUN_TOOL=${MODEL_RUN_TOOL}
 BUNDLE_DIR=${BUNDLE_DIR:-<none>}
 OMC=${OMC:-<missing>}
 INPUT=${INPUT:-<missing>}
 GOLDEN=${GOLDEN:-<none>}
-TARGET=${TARGET:-<auto>}
-RUNNER_HAP=${RUNNER_HAP:-<none>}
-BUNDLE=${BUNDLE}
-ABILITY=${ABILITY}
 DEVICE_DIR=${DEVICE_DIR}
 OUTPUT_NAME=${OUTPUT_NAME}
 LOG_SECONDS=${LOG_SECONDS}
@@ -306,7 +307,7 @@ HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 EVIDENCE_DIR=${EVIDENCE_DIR}
 CAPTURE_LOGS=${CAPTURE_LOGS}
 HILOG_CLEAR=${HILOG_CLEAR}
-CHECK_RUNNER=${CHECK_RUNNER}
+CHECK_TOOL=${CHECK_TOOL}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 STRICT=${STRICT}
@@ -316,13 +317,16 @@ EOF
 fi
 
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC:-<missing>}"
-[ -f "${INPUT}" ] || die "input file not found: ${INPUT:-<missing>}"
+[ -n "${INPUT}" ] || die "input file not provided"
+IFS=',' read -r -a INPUT_FILES <<< "${INPUT}"
+for input_file in "${INPUT_FILES[@]}"; do
+  [ -n "${input_file}" ] || die "empty input path in --input"
+  [ -f "${input_file}" ] || die "input file not found: ${input_file}"
+done
+
 if [ -n "${GOLDEN}" ] && [ ! -f "${GOLDEN}" ]; then
   warn "golden file not found; disabling compare: ${GOLDEN}"
   COMPARE=0
-fi
-if [ -n "${RUNNER_HAP}" ]; then
-  [ -f "${RUNNER_HAP}" ] || die "runner HAP not found: ${RUNNER_HAP}"
 fi
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -330,26 +334,32 @@ mkdir -p "${EVIDENCE_DIR}"
 SUMMARY="${EVIDENCE_DIR}/summary.txt"
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
-INSTALL_LOG="${EVIDENCE_DIR}/runner-install.log"
-BM_DUMP="${EVIDENCE_DIR}/bm-dump.txt"
+TOOL_CHECK_LOG="${EVIDENCE_DIR}/model-run-tool-check.log"
 MKDIR_LOG="${EVIDENCE_DIR}/device-mkdir.log"
+REMOTE_CLEAN_LOG="${EVIDENCE_DIR}/remote-clean-output.log"
 SEND_OMC_LOG="${EVIDENCE_DIR}/send-omc.log"
 SEND_INPUT_LOG="${EVIDENCE_DIR}/send-input.log"
-START_LOG="${EVIDENCE_DIR}/aa-start.log"
+RUN_LOG="${EVIDENCE_DIR}/model-run-tool.log"
+REMOTE_LIST_LOG="${EVIDENCE_DIR}/remote-list-after-run.log"
 HILOG_CLEAR_LOG="${EVIDENCE_DIR}/hilog-clear.log"
 HILOG_RAW="${EVIDENCE_DIR}/hilog.raw.log"
 HILOG_FILTERED="${EVIDENCE_DIR}/hilog.filtered.log"
 PULL_OUTPUT_LOG="${EVIDENCE_DIR}/pull-output.log"
-OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
 COMPARE_LOG="${EVIDENCE_DIR}/compare.log"
+OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
+OUTPUT_REMOTE="${DEVICE_DIR}/${OUTPUT_NAME}"
 
 log "evidence dir: ${EVIDENCE_DIR}"
+log "model_run_tool: ${MODEL_RUN_TOOL}"
+log "remote work dir: ${DEVICE_DIR}"
 log "omc: ${OMC}"
 log "input: ${INPUT}"
 
 {
   sha256_file "${OMC}" || true
-  sha256_file "${INPUT}" || true
+  for input_file in "${INPUT_FILES[@]}"; do
+    sha256_file "${input_file}" || true
+  done
   if [ -n "${GOLDEN}" ] && [ -f "${GOLDEN}" ]; then
     sha256_file "${GOLDEN}" || true
   fi
@@ -385,8 +395,7 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
 
 {
   echo "target=${TARGET}"
-  echo "bundle=${BUNDLE}"
-  echo "ability=${ABILITY}"
+  echo "model_run_tool=${MODEL_RUN_TOOL}"
   echo "device_dir=${DEVICE_DIR}"
   echo
   for key in \
@@ -402,6 +411,17 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
   "${HDC_TARGET[@]}" shell uname -a 2>&1 || true
 } | tee "${TARGET_INFO}" >/dev/null
 
+if [ "${CHECK_TOOL}" -eq 1 ]; then
+  log "checking model_run_tool"
+  set +e
+  "${HDC_TARGET[@]}" shell "test -x $(remote_quote "${MODEL_RUN_TOOL}") && ls -l $(remote_quote "${MODEL_RUN_TOOL}")" > "${TOOL_CHECK_LOG}" 2>&1
+  TOOL_STATUS=$?
+  set -e
+  if [ "${TOOL_STATUS}" -ne 0 ]; then
+    die "model_run_tool not found or not executable: ${MODEL_RUN_TOOL}. Inspect ${TOOL_CHECK_LOG}"
+  fi
+fi
+
 if [ "${CAPTURE_LOGS}" -eq 1 ] && [ "${HILOG_CLEAR}" -eq 1 ]; then
   log "clearing hilog with ${HILOG_CLEAR_TIMEOUT}s timeout"
   set +e
@@ -415,59 +435,13 @@ if [ "${CAPTURE_LOGS}" -eq 1 ] && [ "${HILOG_CLEAR}" -eq 1 ]; then
   fi
 fi
 
-if [ -n "${RUNNER_HAP}" ]; then
-  log "installing runner HAP: ${RUNNER_HAP}"
-  set +e
-  "${HDC_TARGET[@]}" install -r "${RUNNER_HAP}" 2>&1 | tee "${INSTALL_LOG}"
-  INSTALL_STATUS=${PIPESTATUS[0]}
-  set -e
-  if [ "${INSTALL_STATUS}" -ne 0 ] || file_matches "${INSTALL_LOG}" 'msg:error|error:|failed to install|install failed|no signature file|Error Code'; then
-    die "runner HAP install failed; inspect ${INSTALL_LOG}"
-  fi
-fi
-
-if [ "${CHECK_RUNNER}" -eq 1 ]; then
-  log "checking runner bundle: ${BUNDLE}"
-  set +e
-  "${HDC_TARGET[@]}" shell bm dump -a > "${BM_DUMP}" 2>&1
-  BM_STATUS=$?
-  set -e
-  if [ "${BM_STATUS}" -ne 0 ]; then
-    die "bm dump failed; inspect ${BM_DUMP}"
-  fi
-  if ! grep -q "${BUNDLE}" "${BM_DUMP}"; then
-    die "runner bundle not found: ${BUNDLE}. Install the native vetest runner HAP first or pass --runner-hap."
-  fi
-fi
-
-log "ensuring device directory exists: ${DEVICE_DIR}"
+log "ensuring remote work dir exists"
 set +e
-"${HDC_TARGET[@]}" shell mkdir -p "${DEVICE_DIR}" > "${MKDIR_LOG}" 2>&1
+"${HDC_TARGET[@]}" shell "mkdir -p $(remote_quote "${DEVICE_DIR}")" > "${MKDIR_LOG}" 2>&1
 MKDIR_STATUS=$?
 set -e
 if [ "${MKDIR_STATUS}" -ne 0 ]; then
   die "failed to create device directory; inspect ${MKDIR_LOG}"
-fi
-
-OMC_BASENAME="$(basename "${OMC}")"
-INPUT_BASENAME="$(basename "${INPUT}")"
-
-log "sending OMC to device"
-set +e
-"${HDC_TARGET[@]}" file send "${OMC}" "${DEVICE_DIR}/${OMC_BASENAME}" 2>&1 | tee "${SEND_OMC_LOG}"
-SEND_OMC_STATUS=${PIPESTATUS[0]}
-set -e
-if [ "${SEND_OMC_STATUS}" -ne 0 ] || file_matches "${SEND_OMC_LOG}" 'error:|failed|Error Code'; then
-  die "failed to send OMC; inspect ${SEND_OMC_LOG}"
-fi
-
-log "sending input to device"
-set +e
-"${HDC_TARGET[@]}" file send "${INPUT}" "${DEVICE_DIR}/${INPUT_BASENAME}" 2>&1 | tee "${SEND_INPUT_LOG}"
-SEND_INPUT_STATUS=${PIPESTATUS[0]}
-set -e
-if [ "${SEND_INPUT_STATUS}" -ne 0 ] || file_matches "${SEND_INPUT_LOG}" 'error:|failed|Error Code'; then
-  die "failed to send input; inspect ${SEND_INPUT_LOG}"
 fi
 
 LOG_PID=""
@@ -485,21 +459,55 @@ if [ "${CAPTURE_LOGS}" -eq 1 ]; then
   LOG_PID=$!
 fi
 
-log "starting runner"
+OMC_BASENAME="$(basename "${OMC}")"
+REMOTE_OMC="${DEVICE_DIR}/${OMC_BASENAME}"
+
+log "sending OMC to device"
 set +e
-"${HDC_TARGET[@]}" shell aa start \
-  -a "${ABILITY}" \
-  -b "${BUNDLE}" \
-  --ps path "${INPUT_BASENAME}" \
-  --ps omPath "${OMC_BASENAME}" 2>&1 | tee "${START_LOG}"
-START_STATUS=${PIPESTATUS[0]}
+"${HDC_TARGET[@]}" file send "${OMC}" "${REMOTE_OMC}" 2>&1 | tee "${SEND_OMC_LOG}"
+SEND_OMC_STATUS=${PIPESTATUS[0]}
 set -e
-if [ "${START_STATUS}" -ne 0 ] || file_matches "${START_LOG}" 'error:|failed to start ability|Error Code|does not exist|not installed'; then
-  if [ "${STRICT}" -eq 1 ]; then
-    die "aa start failed; inspect ${START_LOG}"
-  fi
-  warn "aa start did not look successful; continuing because --no-strict is set"
+if [ "${SEND_OMC_STATUS}" -ne 0 ] || file_matches "${SEND_OMC_LOG}" 'error:|failed|Error Code'; then
+  die "failed to send OMC; inspect ${SEND_OMC_LOG}"
 fi
+
+: > "${SEND_INPUT_LOG}"
+REMOTE_INPUTS=""
+for input_file in "${INPUT_FILES[@]}"; do
+  input_base="$(basename "${input_file}")"
+  remote_input="${DEVICE_DIR}/${input_base}"
+  log "sending input to device: ${input_base}"
+  set +e
+  "${HDC_TARGET[@]}" file send "${input_file}" "${remote_input}" 2>&1 | tee -a "${SEND_INPUT_LOG}"
+  SEND_INPUT_STATUS=${PIPESTATUS[0]}
+  set -e
+  if [ "${SEND_INPUT_STATUS}" -ne 0 ] || tail -20 "${SEND_INPUT_LOG}" | grep -Eiq 'error:|failed|Error Code'; then
+    die "failed to send input; inspect ${SEND_INPUT_LOG}"
+  fi
+  if [ -z "${REMOTE_INPUTS}" ]; then
+    REMOTE_INPUTS="${remote_input}"
+  else
+    REMOTE_INPUTS="${REMOTE_INPUTS},${remote_input}"
+  fi
+done
+
+log "removing stale output"
+"${HDC_TARGET[@]}" shell "rm -f $(remote_quote "${OUTPUT_REMOTE}")" > "${REMOTE_CLEAN_LOG}" 2>&1 || true
+
+RUN_CMD="$(remote_quote "${MODEL_RUN_TOOL}") --model=$(remote_quote "${REMOTE_OMC}") --input=$(remote_quote "${REMOTE_INPUTS}") --output_dir=$(remote_quote "${DEVICE_DIR}/")"
+log "running model_run_tool"
+set +e
+"${HDC_TARGET[@]}" shell "${RUN_CMD}" 2>&1 | tee "${RUN_LOG}"
+RUN_STATUS=${PIPESTATUS[0]}
+set -e
+if [ "${RUN_STATUS}" -ne 0 ] || file_matches "${RUN_LOG}" 'error:|failed|No such file|not found|permission denied|Error Code'; then
+  if [ "${STRICT}" -eq 1 ]; then
+    die "model_run_tool failed; inspect ${RUN_LOG}"
+  fi
+  warn "model_run_tool did not look successful; continuing because --no-strict is set"
+fi
+
+"${HDC_TARGET[@]}" shell "ls -lt $(remote_quote "${DEVICE_DIR}") | head -30" > "${REMOTE_LIST_LOG}" 2>&1 || true
 
 if [ "${CAPTURE_LOGS}" -eq 1 ]; then
   log "waiting ${LOG_SECONDS}s for runner logs"
@@ -510,16 +518,16 @@ fi
 
 OUTPUT_PULLED=0
 if [ "${PULL_OUTPUT}" -eq 1 ]; then
-  log "pulling output from device: ${OUTPUT_NAME}"
+  log "pulling output: ${OUTPUT_REMOTE}"
   set +e
-  "${HDC_TARGET[@]}" file recv "${DEVICE_DIR}/${OUTPUT_NAME}" "${OUTPUT_LOCAL}" 2>&1 | tee "${PULL_OUTPUT_LOG}"
+  "${HDC_TARGET[@]}" file recv "${OUTPUT_REMOTE}" "${OUTPUT_LOCAL}" 2>&1 | tee "${PULL_OUTPUT_LOG}"
   PULL_STATUS=${PIPESTATUS[0]}
   set -e
   if [ "${PULL_STATUS}" -eq 0 ] && [ -s "${OUTPUT_LOCAL}" ] && ! file_matches "${PULL_OUTPUT_LOG}" 'error:|failed|Error Code|No such file'; then
     OUTPUT_PULLED=1
     sha256_file "${OUTPUT_LOCAL}" > "${EVIDENCE_DIR}/output.sha256" || true
   else
-    warn "output was not pulled successfully; inspect ${PULL_OUTPUT_LOG}"
+    warn "output was not pulled successfully; inspect ${PULL_OUTPUT_LOG} and ${REMOTE_LIST_LOG}"
   fi
 fi
 
@@ -551,13 +559,13 @@ fi
 {
   echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "target=${TARGET}"
-  echo "bundle=${BUNDLE}"
-  echo "ability=${ABILITY}"
+  echo "model_run_tool=${MODEL_RUN_TOOL}"
   echo "device_dir=${DEVICE_DIR}"
   echo "omc=${OMC}"
   echo "input=${INPUT}"
   echo "golden=${GOLDEN:-}"
   echo "output_name=${OUTPUT_NAME}"
+  echo "output_remote=${OUTPUT_REMOTE}"
   echo "output_local=${OUTPUT_LOCAL}"
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
@@ -571,7 +579,11 @@ fi
   echo
   echo "important_files:"
   echo "- ${TARGET_INFO}"
-  echo "- ${START_LOG}"
+  echo "- ${TOOL_CHECK_LOG}"
+  echo "- ${SEND_OMC_LOG}"
+  echo "- ${SEND_INPUT_LOG}"
+  echo "- ${RUN_LOG}"
+  echo "- ${REMOTE_LIST_LOG}"
   echo "- ${PULL_OUTPUT_LOG}"
   echo "- ${COMPARE_LOG}"
   echo "- ${HILOG_FILTERED}"
@@ -583,7 +595,7 @@ if [ "${CAPTURE_LOGS}" -eq 1 ]; then
 fi
 
 if [ "${RESULT}" = "PASS_CANDIDATE" ]; then
-  log "PASS_CANDIDATE: runner produced output0.bin and it matches the golden file."
+  log "PASS_CANDIDATE: output was pulled and matches the golden file."
   exit 0
 fi
 

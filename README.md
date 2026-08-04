@@ -14,10 +14,11 @@ This repository is intentionally scoped to portable scripts, setup notes, checkp
 
 Run the first real-device spike on a HarmonyOS phone with a Kirin chip:
 
-1. Fast path: run the prebuilt `SobelCustom.omc` on a real device.
+1. Fast path: run the prebuilt `SobelCustom.omc` on a real device through `/data/local/tmp/model_run_tool`.
 2. Full toolchain path: build the Sobel custom operator on Linux and convert it with ATC.
-3. App path: package the HarmonyOS `Soble` app with DevEco when app UI validation is needed.
-4. Validate NPU inference and collect device evidence.
+3. Validate NPU inference and collect device evidence.
+
+The previous HAP install + `aa start` workflow is not the current operator/kernel test path. It was removed from the active scripts after the real HarmonyOS PC history showed that local testing uses `model_run_tool` directly.
 
 ## Known Boundary
 
@@ -25,17 +26,9 @@ The public standard `aarch64` CANN toolkit installs, but it has not compiled the
 
 See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the current state and evidence.
 
-For physical-device validation commands, see `docs/kirin-real-device-test-playbook.md`.
+For the naked `.omc` `model_run_tool` path, see `docs/kirin-naked-omc-test-playbook.md`.
 
-For the naked `.omc` runner path, see `docs/kirin-naked-omc-test-playbook.md`.
-
-Scripted HDC test wrapper:
-
-```bash
-scripts/test-harmonyos-pc.sh --hap /path/to/entry-default-signed.hap
-```
-
-Scripted naked OMC runner wrapper:
+Scripted naked OMC `model_run_tool` wrapper:
 
 ```bash
 scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin-sobel-naked-omc-2026-08-03

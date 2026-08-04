@@ -1,28 +1,25 @@
-# Kirin Naked OMC Real-Device Test Playbook
+# Kirin Naked OMC Model Run Tool Playbook
 
-这份 playbook 是给“先不重新打包 Soble HAP，直接测试裸 `.omc` 文件”的真机 spike 用的。
+这份 playbook 是给“直接在 HarmonyOS 真机上测试裸 `.omc` 算子/模型文件”的 spike 用的。
 
 ## 结论
 
-裸 `.omc` 不是一个可以自己执行的可执行文件。它仍然需要一个 HarmonyOS 端 runner 应用来调用 CANN/NN runtime。
-
-这里采用仓库文档里出现过的 native vetest runner 约定：
+根据 issue #1 里真实物理机器的 shell history，这台 HarmonyOS PC 上的惯例不是安装 HAP runner，而是使用设备上的 native CLI：
 
 ```text
-bundleName: com.example.naticvetestdemo
-ability: EntryAbility
-device dir: /mnt/hmdfs/100/account/device_view/local/files/Docs/Download/com.example.naticvetestdemo
+/data/local/tmp/model_run_tool
 ```
 
-测试方式是：
+因此当前标准测试路径是：
 
-1. 一次性安装 runner HAP。
-2. 通过 `hdc file send` 把 `.omc` 和输入 `.bin` 传到 runner 文档目录。
-3. 通过 `aa start ... --ps path ... --ps omPath ...` 启动 runner。
-4. 从设备拉回 `output0.bin`。
-5. 和 golden `y.bin` 比较。
+```bash
+hdc -t "$SN" file send <model.omc> /data/local/tmp/<model.omc>
+hdc -t "$SN" file send <input.bin> /data/local/tmp/<input.bin>
+hdc -t "$SN" shell "/data/local/tmp/model_run_tool --model=/data/local/tmp/<model.omc> --input=/data/local/tmp/<input.bin> --output_dir=/data/local/tmp/"
+hdc -t "$SN" file recv /data/local/tmp/output_0 ./output.bin
+```
 
-这条路径不需要把每个 `.omc` 都打包进 Soble app，也不需要给每个 `.omc` 重新做 HAP 签名。
+不再使用 `com.example.naticvetestdemo`、HAP 安装、`aa start --ps omPath` 这条路径。
 
 ## 当前已准备文件
 
@@ -54,7 +51,7 @@ kirin-sobel-naked-omc-2026-08-03/
 文件含义：
 
 ```text
-SobelCustom.omc  现成 Sobel CANN 模型，裸测主文件
+SobelCustom.omc  现成 Sobel CANN 模型
 SobelCustom.om   同一 demo 携带的 companion model artifact，备用留存
 x.bin            输入数据，uint8 NHWC，shape [1, 763, 1024, 3]
 y.bin            golden 输出，uint8，shape [1, 1, 761, 1022] flatten 后二进制
@@ -77,6 +74,7 @@ y.bin            golden 输出，uint8，shape [1, 1, 761, 1022] flatten 后二�
 HarmonyOS PC / phone / tablet
 Kirin NPU runtime 可用
 Developer mode / HDC debugging 已打开
+/data/local/tmp/model_run_tool 已存在且可执行
 ```
 
 控制端：
@@ -87,13 +85,16 @@ hdc 可用
 已 clone kirin-ops 仓库
 ```
 
-Runner：
+检查 runner：
 
-```text
-com.example.naticvetestdemo 已安装
+```bash
+hdc list targets
+export SN="<target-id>"
+
+hdc -t "$SN" shell "ls -l /data/local/tmp/model_run_tool && /data/local/tmp/model_run_tool --help"
 ```
 
-如果 runner 还没装，需要先从同事或 CANN Kit 维测样例拿到签好的 runner HAP。这个仓库目前没有 `naticvetestdemo` HAP 或源码。
+如果 `--help` 不支持也没关系，至少要确认文件存在并可执行。
 
 ## 在另一台 HarmonyOS PC 上执行
 
@@ -122,15 +123,10 @@ unzip -o kirin-sobel-naked-omc-2026-08-03.zip
 
 ```bash
 hdc list targets
-```
-
-如果只看到一个 target，可以不传 `--target`。如果有多个，指定 target：
-
-```bash
 export SN="SH236HS0488"
 ```
 
-如果 runner 已经安装：
+执行 Sobel 裸 `.omc`：
 
 ```bash
 scripts/test-naked-omc-vetest.sh \
@@ -139,17 +135,54 @@ scripts/test-naked-omc-vetest.sh \
   --no-clear-logs
 ```
 
-如果你手里有签好的 runner HAP，但还没安装：
+`--no-clear-logs` 是因为我们已经见过部分机器上 `hdc hilog -r` 可能卡住。
+
+## 手工命令
+
+脚本等价于下面这组命令：
+
+```bash
+hdc -t "$SN" shell "ls -l /data/local/tmp/model_run_tool"
+
+hdc -t "$SN" file send \
+  kirin-sobel-naked-omc-2026-08-03/SobelCustom.omc \
+  /data/local/tmp/SobelCustom.omc
+
+hdc -t "$SN" file send \
+  kirin-sobel-naked-omc-2026-08-03/x.bin \
+  /data/local/tmp/x.bin
+
+hdc -t "$SN" shell "rm -f /data/local/tmp/output_0"
+
+hdc -t "$SN" shell \
+  "/data/local/tmp/model_run_tool --model=/data/local/tmp/SobelCustom.omc --input=/data/local/tmp/x.bin --output_dir=/data/local/tmp/"
+
+hdc -t "$SN" shell "ls -lt /data/local/tmp/ | head -20"
+hdc -t "$SN" file recv /data/local/tmp/output_0 ./output_sobel.bin
+
+cmp output_sobel.bin kirin-sobel-naked-omc-2026-08-03/y.bin
+```
+
+## 多输入算子
+
+issue #1 的 history 里出现过多输入写法：
+
+```bash
+--input=/data/local/tmp/add_x1.bin,/data/local/tmp/add_x2.bin
+```
+
+脚本支持本地多输入文件用逗号分隔：
 
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --target "$SN" \
-  --runner-hap /absolute/path/to/entry-default-signed.hap \
-  --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
+  --omc /path/to/add_1.omc \
+  --input /path/to/add_x1.bin,/path/to/add_x2.bin \
+  --no-compare \
   --no-clear-logs
 ```
 
-`--no-clear-logs` 是因为我们已经见过部分机器上 `hdc hilog -r` 可能卡住。脚本默认也有 5 秒 timeout，但真机 spike 时建议先跳过清日志。
+脚本会把每个输入文件发送到 `/data/local/tmp/`，并生成远端逗号分隔参数。
 
 ## 脚本做了什么
 
@@ -163,14 +196,13 @@ scripts/test-naked-omc-vetest.sh
 
 ```text
 1. 检查 hdc 和 target。
-2. 可选安装 --runner-hap。
-3. 检查 com.example.naticvetestdemo 是否已安装。
-4. 创建/确认设备目录。
-5. 发送 SobelCustom.omc 和 x.bin。
-6. 启动 runner:
-   aa start -a EntryAbility -b com.example.naticvetestdemo --ps path x.bin --ps omPath SobelCustom.omc
+2. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
+3. 创建/确认 /data/local/tmp。
+4. 发送 .omc 和一个或多个输入 .bin。
+5. 删除旧的 /data/local/tmp/output_0。
+6. 执行 model_run_tool。
 7. 捕获 hilog。
-8. 拉回 output0.bin。
+8. 拉回 /data/local/tmp/output_0。
 9. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
 10. 写 evidence summary。
 ```
@@ -186,12 +218,16 @@ artifacts/naked-omc-runs/<timestamp>/
 ```text
 summary.txt
 target-info.txt
-aa-start.log
+model-run-tool-check.log
+send-omc.log
+send-input.log
+model-run-tool.log
+remote-list-after-run.log
 pull-output.log
 compare.log
 hilog.raw.log
 hilog.filtered.log
-output0.bin
+output_0
 ```
 
 ## 成功标准
@@ -199,28 +235,28 @@ output0.bin
 最低可接受：
 
 ```text
-aa start 成功
-output0.bin 被拉回
+model_run_tool 返回成功
+/data/local/tmp/output_0 被拉回
 ```
 
 更强的成功标准：
 
 ```text
-output0.bin 与 y.bin 完全一致
+output_0 与 y.bin 完全一致
 summary.txt 里 result=PASS_CANDIDATE
 ```
 
-如果 compare 通过，可以认为这条裸 `.omc` runner 路径已经基本打通。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果 compare 通过，可以认为这条裸 `.omc` CLI runner 路径已经基本打通。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 ## 常见问题
 
-Runner 未安装：
+`model_run_tool` 不存在或不可执行：
 
 ```text
-runner bundle not found: com.example.naticvetestdemo
+model_run_tool not found or not executable
 ```
 
-处理方式：拿到 signed runner HAP 后重跑并加 `--runner-hap /path/to/hap`。
+处理方式：先从同事机器/内部环境拿到该工具，并放到目标设备 `/data/local/tmp/model_run_tool`，确保有执行权限。
 
 找不到设备：
 
@@ -236,7 +272,7 @@ no hdc targets found
 scripts/test-naked-omc-vetest.sh ... --no-clear-logs
 ```
 
-没有 `output0.bin`：
+没有 `output_0`：
 
 ```text
 output was not pulled successfully
@@ -245,10 +281,10 @@ output was not pulled successfully
 优先检查：
 
 ```text
-aa-start.log
+model-run-tool.log
+remote-list-after-run.log
 hilog.filtered.log
-设备目录是否和 runner 代码一致
-runner 是否真的按 output0.bin 写结果
+输入文件名和 model_run_tool 参数是否匹配
 ```
 
 Compare 失败：
@@ -261,19 +297,16 @@ golden compare failed
 
 ```text
 模型和输入不匹配
-runner 的输入解析与 x.bin 不一致
 目标 SoC/runtime 和这个 prebuilt SobelCustom.omc 不兼容
-runner 实际输出 layout 与 y.bin 不一致
+model_run_tool 的输出 layout 与 y.bin 不一致
 ```
 
 ## 当前 blocker
 
-我们已经有裸测所需的 Sobel `.omc`、输入、golden 和自动化脚本。
+我们已经有 Sobel `.omc`、输入、golden 和自动化脚本。
 
-还缺的唯一关键文件是：
+唯一外部前置是：
 
 ```text
-签好的 native vetest runner HAP，bundleName 应为 com.example.naticvetestdemo
+/data/local/tmp/model_run_tool 在目标 HarmonyOS 设备上存在且可执行
 ```
-
-如果另一台 HarmonyOS PC 上已经装了这个 runner，就可以直接跑脚本，不需要 HAP 签名流程。

@@ -616,21 +616,36 @@ Interpretation:
 - It still needs DevEco debug signing or configured signing credentials before installation on a physical device.
 - Runtime success still depends on the target Huawei phone/tablet/2in1 supporting the `.omc` target SoC and the required HiAI/CANN Kit runtime.
 
-## Naked OMC Vetest Runner Path
+## Naked OMC Model Run Tool Path
 
 2026-08-03 update:
 
 - A separate path was prepared for testing a naked `.omc` without repackaging the Soble HAP for every model.
-- This path still requires a HarmonyOS native test runner application. The runner convention comes from `cann-recipes-harmony-infer/docs/ascend_ops_guide.md`:
+- A later real physical-machine history dump in issue #1 showed that other developers on that HarmonyOS PC are not using a HAP/`aa start` runner. They are using a native CLI runner already present on the target:
 
   ```text
-  bundleName: com.example.naticvetestdemo
-  ability: EntryAbility
-  device dir: /mnt/hmdfs/100/account/device_view/local/files/Docs/Download/com.example.naticvetestdemo
-  start args: --ps path <input.bin> --ps omPath <model.omc>
-  output: output0.bin
+  /data/local/tmp/model_run_tool
   ```
 
+- Observed command convention:
+
+  ```bash
+  hdc -t SH236HS0488 file send /data/model/gelu_fp32.omc /data/local/tmp/gelu_fp32.omc
+  hdc -t SH236HS0488 file send /data/model/gelu_fp16_input.bin /data/local/tmp/gelu_fp16_input.bin
+  hdc -t SH236HS0488 shell "/data/local/tmp/model_run_tool --model=/data/local/tmp/gelu_fp16.omc --input=/data/local/tmp/gelu_fp16_input.bin --output_dir=/data/local/tmp/"
+  hdc -t SH236HS0488 file recv /data/local/tmp/output_0 ./output_gelu_fp32.bin
+  ```
+
+- Multi-input convention from the same history:
+
+  ```bash
+  --input=/data/local/tmp/add_fp16_x1.bin,/data/local/tmp/add_fp16_x2.bin
+  ```
+
+- The HAP/`aa start --ps omPath` branch has been removed from the active automation and playbooks because it does not match the proven workflow on the target machine.
+- Removed active legacy entry points:
+  - `scripts/test-harmonyos-pc.sh`
+  - `docs/kirin-real-device-test-playbook.md`
 - Added script:
 
   ```text
@@ -667,9 +682,9 @@ Interpretation:
 
 Current blocker for this path:
 
-- We still do not have the signed `com.example.naticvetestdemo` runner HAP or its source in this workspace.
-- If the HarmonyOS PC already has that runner installed, the naked OMC test can run immediately.
-- If it is not installed, obtain the signed runner HAP from colleagues or the CANN Kit vetest/debugging sample, then pass it to the script with `--runner-hap`.
+- We need the target HarmonyOS PC to have `/data/local/tmp/model_run_tool` present and executable.
+- If it is present, the naked OMC test can run without HAP installation/signing.
+- If it is missing, obtain `model_run_tool` from the internal environment or colleagues and place it under `/data/local/tmp/model_run_tool` with execute permission.
 
 ## Re-entry Commands
 
