@@ -26,15 +26,22 @@ LOG_SECONDS="${LOG_SECONDS:-30}"
 HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
+EVIDENCE_ARCHIVE="${EVIDENCE_ARCHIVE:-}"
 CAPTURE_LOGS=1
 HILOG_CLEAR=1
 CHECK_TOOL=1
 CHECK_SOC=1
 COLLECT_DIAGS=1
+EXPORT_LOGS=1
+RAW_HILOG_MODE="${RAW_HILOG_MODE:-auto}"
 PULL_OUTPUT=1
 COMPARE=1
 STRICT=1
 DRY_RUN=0
+EVIDENCE_INITIALIZED=0
+EXPORT_DONE=0
+EXPORT_IN_PROGRESS=0
+EVIDENCE_ARCHIVE_EXPLICIT=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
@@ -65,6 +72,8 @@ Options:
   --output-name NAME     Remote output file name to pull. Default: output_0
   --log-seconds N        Log capture window after runner start. Default: 30
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
+  --evidence-archive PATH
+                         Evidence archive path. Default: <evidence-dir>.tgz
   --no-clear-logs        Do not run "hdc shell hilog -r" before capture.
   --hilog-clear-timeout N
                          Seconds to wait for "hdc shell hilog -r". Default: 5
@@ -73,6 +82,10 @@ Options:
   --skip-soc-check       Do not preflight-check .omc SoC metadata against the target.
                          Use only when intentionally running despite unknown/mismatched SoC.
   --no-diagnostics       Do not collect extra target/runner/file diagnostics.
+  --no-export-logs       Do not create evidence-files.txt or the .tgz evidence archive.
+  --include-raw-hilog    Always include hilog.raw.log in the evidence archive.
+  --no-raw-hilog         Never include hilog.raw.log in the evidence archive.
+                         Default: include raw hilog only when filtered hilog is empty.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
   --no-logs              Do not capture hilog.
@@ -104,7 +117,13 @@ warn() {
 }
 
 die() {
-  printf '[kirin-naked-omc] ERROR: %s\n' "$*" >&2
+  local message="$*"
+
+  printf '[kirin-naked-omc] ERROR: %s\n' "${message}" >&2
+  if [ "${EVIDENCE_INITIALIZED:-0}" -eq 1 ] && [ "${EXPORT_IN_PROGRESS:-0}" -eq 0 ]; then
+    write_failure_summary_if_missing "${message}" || true
+    export_evidence_bundle || true
+  fi
   exit 1
 }
 
@@ -276,6 +295,152 @@ collect_remote_diag() {
   fi
 }
 
+append_evidence_file() {
+  local path="$1"
+
+  [ -n "${path}" ] || return 0
+  [ -e "${path}" ] || return 0
+  case "${path}" in
+    "${EVIDENCE_DIR}/"*)
+      printf '%s\n' "${path#"${EVIDENCE_DIR}/"}" >> "${EVIDENCE_MANIFEST}"
+      ;;
+    *)
+      warn "skipping evidence file outside evidence dir: ${path}"
+      ;;
+  esac
+}
+
+write_failure_summary_if_missing() {
+  local failure_message="$1"
+
+  [ -n "${SUMMARY:-}" ] || return 0
+  [ ! -s "${SUMMARY}" ] || return 0
+
+  {
+    echo "timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "target=${TARGET:-}"
+    echo "model_run_tool=${MODEL_RUN_TOOL:-}"
+    echo "device_dir=${DEVICE_DIR:-}"
+    echo "omc=${OMC:-}"
+    echo "input=${INPUT:-}"
+    echo "golden=${GOLDEN:-}"
+    echo "check_soc=${CHECK_SOC:-}"
+    echo "model_soc_versions=$(format_soc_set "${MODEL_SOC_VERSIONS:-}")"
+    echo "target_soc_versions=$(format_soc_set "${TARGET_SOC_VERSIONS:-}")"
+    echo "soc_check_result=${SOC_CHECK_RESULT:-NOT_REACHED}"
+    echo "output_name=${OUTPUT_NAME:-}"
+    echo "output_remote=${OUTPUT_REMOTE:-}"
+    echo "output_local=${OUTPUT_LOCAL:-}"
+    echo "output_pulled=${OUTPUT_PULLED:-0}"
+    echo "compare=${COMPARE:-}"
+    echo "compare_result=${COMPARE_RESULT:-NOT_REACHED}"
+    echo "run_failed=${RUN_FAILED:-1}"
+    echo "run_failure_reason=${RUN_FAILURE_REASON:-${failure_message}}"
+    echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
+    echo "capture_logs=${CAPTURE_LOGS:-}"
+    echo "collect_diagnostics=${COLLECT_DIAGS:-}"
+    echo "export_logs=${EXPORT_LOGS:-}"
+    echo "raw_hilog_mode=${RAW_HILOG_MODE:-}"
+    echo "evidence_manifest=${EVIDENCE_MANIFEST:-}"
+    echo "evidence_archive=${EVIDENCE_ARCHIVE:-}"
+    echo "diag_timeout=${DIAG_TIMEOUT:-}"
+    echo "strict=${STRICT:-}"
+    echo "result=EARLY_FAILURE"
+    echo "failure=${failure_message}"
+    if [ -s "${EVIDENCE_DIR}/host-inputs.sha256" ]; then
+      echo
+      echo "host_input_hashes:"
+      cat "${EVIDENCE_DIR}/host-inputs.sha256"
+    fi
+  } > "${SUMMARY}"
+}
+
+write_evidence_manifest() {
+  : > "${EVIDENCE_MANIFEST}"
+
+  append_evidence_file "${SUMMARY:-}"
+  append_evidence_file "${HDC_INFO:-}"
+  append_evidence_file "${TARGETS_FILE:-}"
+  append_evidence_file "${TARGET_INFO:-}"
+  append_evidence_file "${SOC_CHECK_LOG:-}"
+  append_evidence_file "${TARGET_DIAG_LOG:-}"
+  append_evidence_file "${RUNNER_DIAG_LOG:-}"
+  append_evidence_file "${MODEL_INFO:-}"
+  append_evidence_file "${TOOL_CHECK_LOG:-}"
+  append_evidence_file "${MKDIR_LOG:-}"
+  append_evidence_file "${REMOTE_CLEAN_LOG:-}"
+  append_evidence_file "${SEND_OMC_LOG:-}"
+  append_evidence_file "${SEND_INPUT_LOG:-}"
+  append_evidence_file "${RUN_LOG:-}"
+  append_evidence_file "${REMOTE_FILES_BEFORE_LOG:-}"
+  append_evidence_file "${REMOTE_FILES_AFTER_LOG:-}"
+  append_evidence_file "${REMOTE_LIST_LOG:-}"
+  append_evidence_file "${PULL_OUTPUT_LOG:-}"
+  append_evidence_file "${COMPARE_LOG:-}"
+  append_evidence_file "${HILOG_CLEAR_LOG:-}"
+  append_evidence_file "${HILOG_FILTERED:-}"
+  append_evidence_file "${EVIDENCE_DIR}/host-inputs.sha256"
+  append_evidence_file "${EVIDENCE_DIR}/output.sha256"
+  append_evidence_file "${OUTPUT_LOCAL:-}"
+
+  if [ "${RAW_HILOG_MODE}" = "always" ] || { [ "${RAW_HILOG_MODE}" = "auto" ] && [ -f "${HILOG_RAW:-}" ] && [ ! -s "${HILOG_FILTERED:-}" ]; }; then
+    append_evidence_file "${HILOG_RAW:-}"
+  fi
+
+  append_evidence_file "${EVIDENCE_MANIFEST}"
+  awk 'NF && !seen[$0]++' "${EVIDENCE_MANIFEST}" > "${EVIDENCE_MANIFEST}.tmp"
+  mv "${EVIDENCE_MANIFEST}.tmp" "${EVIDENCE_MANIFEST}"
+}
+
+export_evidence_bundle() {
+  local archive_dir
+  local status
+
+  [ "${EXPORT_LOGS:-0}" -eq 1 ] || return 0
+  [ "${EVIDENCE_INITIALIZED:-0}" -eq 1 ] || return 0
+  [ "${EXPORT_DONE:-0}" -eq 0 ] || return 0
+  [ "${EXPORT_IN_PROGRESS:-0}" -eq 0 ] || return 0
+
+  EXPORT_IN_PROGRESS=1
+
+  if ! command -v tar >/dev/null 2>&1; then
+    warn "tar not found; skipping evidence archive export"
+    EXPORT_DONE=1
+    EXPORT_IN_PROGRESS=0
+    return 0
+  fi
+
+  write_evidence_manifest
+  if [ ! -s "${EVIDENCE_MANIFEST}" ]; then
+    warn "no evidence files found to export"
+    EXPORT_DONE=1
+    EXPORT_IN_PROGRESS=0
+    return 0
+  fi
+
+  archive_dir="$(dirname "${EVIDENCE_ARCHIVE}")"
+  mkdir -p "${archive_dir}"
+
+  set +e
+  tar -czf "${EVIDENCE_ARCHIVE}" -C "${EVIDENCE_DIR}" -T "${EVIDENCE_MANIFEST}"
+  status=$?
+  set -e
+
+  if [ "${status}" -ne 0 ]; then
+    warn "failed to create evidence archive: ${EVIDENCE_ARCHIVE}"
+  else
+    sha256_file "${EVIDENCE_ARCHIVE}" > "${EVIDENCE_ARCHIVE}.sha256" || true
+    log "evidence manifest: ${EVIDENCE_MANIFEST}"
+    log "evidence archive: ${EVIDENCE_ARCHIVE}"
+    if [ -s "${EVIDENCE_ARCHIVE}.sha256" ]; then
+      log "evidence archive sha256: ${EVIDENCE_ARCHIVE}.sha256"
+    fi
+  fi
+
+  EXPORT_DONE=1
+  EXPORT_IN_PROGRESS=0
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle-dir)
@@ -336,6 +501,12 @@ while [ "$#" -gt 0 ]; do
       EVIDENCE_DIR="$2"
       shift 2
       ;;
+    --evidence-archive)
+      [ "$#" -ge 2 ] || die "--evidence-archive requires a path"
+      EVIDENCE_ARCHIVE="$2"
+      EVIDENCE_ARCHIVE_EXPLICIT=1
+      shift 2
+      ;;
     --no-clear-logs)
       HILOG_CLEAR=0
       shift
@@ -360,6 +531,18 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-diagnostics)
       COLLECT_DIAGS=0
+      shift
+      ;;
+    --no-export-logs)
+      EXPORT_LOGS=0
+      shift
+      ;;
+    --include-raw-hilog)
+      RAW_HILOG_MODE="always"
+      shift
+      ;;
+    --no-raw-hilog)
+      RAW_HILOG_MODE="never"
       shift
       ;;
     --no-pull-output)
@@ -438,6 +621,14 @@ if [ "${DIAG_TIMEOUT}" -lt 1 ]; then
   die "--diag-timeout must be at least 1"
 fi
 
+case "${RAW_HILOG_MODE}" in
+  auto|always|never)
+    ;;
+  *)
+    die "RAW_HILOG_MODE must be auto, always, or never"
+    ;;
+esac
+
 if ! command -v hdc >/dev/null 2>&1 && [ -f "${ROOT}/scripts/local-macos-env.sh" ]; then
   # shellcheck disable=SC1091
   source "${ROOT}/scripts/local-macos-env.sh" >/dev/null 2>&1 || true
@@ -449,6 +640,10 @@ HDC_BIN="$(command -v hdc || true)"
 if [ -z "${EVIDENCE_DIR}" ]; then
   STAMP="$(date +%Y%m%d_%H%M%S)"
   EVIDENCE_DIR="${ROOT}/artifacts/naked-omc-runs/${STAMP}"
+fi
+
+if [ -z "${EVIDENCE_ARCHIVE}" ]; then
+  EVIDENCE_ARCHIVE="${EVIDENCE_DIR}.tgz"
 fi
 
 if [ "${DRY_RUN}" -eq 1 ]; then
@@ -467,17 +662,26 @@ LOG_SECONDS=${LOG_SECONDS}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 DIAG_TIMEOUT=${DIAG_TIMEOUT}
 EVIDENCE_DIR=${EVIDENCE_DIR}
+EVIDENCE_ARCHIVE=${EVIDENCE_ARCHIVE}
 CAPTURE_LOGS=${CAPTURE_LOGS}
 HILOG_CLEAR=${HILOG_CLEAR}
 CHECK_TOOL=${CHECK_TOOL}
 CHECK_SOC=${CHECK_SOC}
 COLLECT_DIAGS=${COLLECT_DIAGS}
+EXPORT_LOGS=${EXPORT_LOGS}
+RAW_HILOG_MODE=${RAW_HILOG_MODE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 STRICT=${STRICT}
 LOG_RE=${LOG_RE}
 EOF
   exit 0
+fi
+
+mkdir -p "${EVIDENCE_DIR}"
+EVIDENCE_DIR="$(cd "${EVIDENCE_DIR}" && pwd -P)"
+if [ "${EVIDENCE_ARCHIVE_EXPLICIT}" -eq 0 ]; then
+  EVIDENCE_ARCHIVE="${EVIDENCE_DIR}.tgz"
 fi
 
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC:-<missing>}"
@@ -493,9 +697,8 @@ if [ -n "${GOLDEN}" ] && [ ! -f "${GOLDEN}" ]; then
   COMPARE=0
 fi
 
-mkdir -p "${EVIDENCE_DIR}"
-
 SUMMARY="${EVIDENCE_DIR}/summary.txt"
+EVIDENCE_MANIFEST="${EVIDENCE_DIR}/evidence-files.txt"
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
 HDC_INFO="${EVIDENCE_DIR}/hdc-info.txt"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
@@ -519,8 +722,10 @@ PULL_OUTPUT_LOG="${EVIDENCE_DIR}/pull-output.log"
 COMPARE_LOG="${EVIDENCE_DIR}/compare.log"
 OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
 OUTPUT_REMOTE="${DEVICE_DIR}/${OUTPUT_NAME}"
+EVIDENCE_INITIALIZED=1
 
 log "evidence dir: ${EVIDENCE_DIR}"
+log "evidence archive: ${EVIDENCE_ARCHIVE}"
 log "model_run_tool: ${MODEL_RUN_TOOL}"
 log "remote work dir: ${DEVICE_DIR}"
 log "omc: ${OMC}"
@@ -861,6 +1066,10 @@ fi
   echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
   echo "capture_logs=${CAPTURE_LOGS}"
   echo "collect_diagnostics=${COLLECT_DIAGS}"
+  echo "export_logs=${EXPORT_LOGS}"
+  echo "raw_hilog_mode=${RAW_HILOG_MODE}"
+  echo "evidence_manifest=${EVIDENCE_MANIFEST}"
+  echo "evidence_archive=${EVIDENCE_ARCHIVE}"
   echo "diag_timeout=${DIAG_TIMEOUT}"
   echo "strict=${STRICT}"
   echo "result=${RESULT}"
@@ -886,6 +1095,8 @@ fi
   echo "- ${COMPARE_LOG}"
   echo "- ${HILOG_FILTERED}"
 } > "${SUMMARY}"
+
+export_evidence_bundle
 
 log "summary: ${SUMMARY}"
 if [ "${CAPTURE_LOGS}" -eq 1 ]; then

@@ -248,6 +248,7 @@ scripts/test-naked-omc-vetest.sh
 14. 拉回 /data/local/tmp/output_0。
 15. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
 16. 写 evidence summary。
+17. 自动写 evidence-files.txt，打包 `<evidence-dir>.tgz`，并生成 `<evidence-dir>.tgz.sha256`。
 ```
 
 Evidence 默认目录：
@@ -278,6 +279,34 @@ compare.log
 hilog.raw.log
 hilog.filtered.log
 output_0
+evidence-files.txt
+../<timestamp>.tgz
+../<timestamp>.tgz.sha256
+```
+
+默认 archive 路径是：
+
+```text
+<evidence-dir>.tgz
+```
+
+脚本会把 archive 和 sha256 路径打印到终端，也会写入 `summary.txt`：
+
+```text
+evidence_archive=...
+evidence_manifest=...
+```
+
+默认不把 `hilog.raw.log` 放进 archive，除非 `hilog.filtered.log` 为空。这样避免正常情况下打出很大的压缩包。如果诊断需要完整 raw hilog，可以显式打开：
+
+```bash
+scripts/test-naked-omc-vetest.sh ... --include-raw-hilog
+```
+
+如果你只想在本机保留散落日志，不想生成 `.tgz`：
+
+```bash
+scripts/test-naked-omc-vetest.sh ... --no-export-logs
 ```
 
 ## 成功标准
@@ -431,6 +460,8 @@ model-run-tool.log
 remote-files-after-run.log
 hilog.filtered.log
 ```
+
+现在脚本默认已经把这些文件打进 `<evidence-dir>.tgz`，通常直接上传这个 `.tgz` 和旁边的 `.sha256` 即可。
 
 Compare 失败：
 
