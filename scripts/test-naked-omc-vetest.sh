@@ -24,11 +24,13 @@ DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
 LOG_SECONDS="${LOG_SECONDS:-30}"
 HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
+DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 CAPTURE_LOGS=1
 HILOG_CLEAR=1
 CHECK_TOOL=1
 CHECK_SOC=1
+COLLECT_DIAGS=1
 PULL_OUTPUT=1
 COMPARE=1
 STRICT=1
@@ -36,7 +38,7 @@ DRY_RUN=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
-LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors}"
+LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline}"
 
 usage() {
   cat <<'USAGE'
@@ -63,12 +65,14 @@ Options:
   --output-name NAME     Remote output file name to pull. Default: output_0
   --log-seconds N        Log capture window after runner start. Default: 30
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
-  --no-clear-logs        Do not run "hdc hilog -r" before capture.
+  --no-clear-logs        Do not run "hdc shell hilog -r" before capture.
   --hilog-clear-timeout N
-                         Seconds to wait for "hdc hilog -r". Default: 5
+                         Seconds to wait for "hdc shell hilog -r". Default: 5
+  --diag-timeout N       Seconds to wait for each diagnostic probe. Default: 15
   --skip-tool-check      Do not check model_run_tool before running.
   --skip-soc-check       Do not preflight-check .omc SoC metadata against the target.
                          Use only when intentionally running despite unknown/mismatched SoC.
+  --no-diagnostics       Do not collect extra target/runner/file diagnostics.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
   --no-logs              Do not capture hilog.
@@ -251,6 +255,27 @@ run_with_timeout() {
   wait "${cmd_pid}"
 }
 
+collect_remote_diag() {
+  local label="$1"
+  local output_file="$2"
+  local remote_cmd="$3"
+  local status
+
+  [ "${COLLECT_DIAGS}" -eq 1 ] || return 0
+
+  log "collecting ${label}: ${output_file}"
+  set +e
+  run_with_timeout "${DIAG_TIMEOUT}" "${output_file}" "${HDC_TARGET[@]}" shell "${remote_cmd}"
+  status=$?
+  set -e
+
+  if [ "${status}" -eq 124 ]; then
+    warn "${label} timed out after ${DIAG_TIMEOUT}s; partial output may be in ${output_file}"
+  elif [ "${status}" -ne 0 ]; then
+    warn "${label} exited with status ${status}; inspect ${output_file}"
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle-dir)
@@ -320,12 +345,21 @@ while [ "$#" -gt 0 ]; do
       HILOG_CLEAR_TIMEOUT="$2"
       shift 2
       ;;
+    --diag-timeout)
+      [ "$#" -ge 2 ] || die "--diag-timeout requires a number"
+      DIAG_TIMEOUT="$2"
+      shift 2
+      ;;
     --skip-tool-check)
       CHECK_TOOL=0
       shift
       ;;
     --skip-soc-check)
       CHECK_SOC=0
+      shift
+      ;;
+    --no-diagnostics)
+      COLLECT_DIAGS=0
       shift
       ;;
     --no-pull-output)
@@ -394,6 +428,16 @@ if [ "${HILOG_CLEAR_TIMEOUT}" -lt 1 ]; then
   die "--hilog-clear-timeout must be at least 1"
 fi
 
+case "${DIAG_TIMEOUT}" in
+  ''|*[!0-9]*)
+    die "--diag-timeout must be a positive integer"
+    ;;
+esac
+
+if [ "${DIAG_TIMEOUT}" -lt 1 ]; then
+  die "--diag-timeout must be at least 1"
+fi
+
 if ! command -v hdc >/dev/null 2>&1 && [ -f "${ROOT}/scripts/local-macos-env.sh" ]; then
   # shellcheck disable=SC1091
   source "${ROOT}/scripts/local-macos-env.sh" >/dev/null 2>&1 || true
@@ -421,11 +465,13 @@ DEVICE_DIR=${DEVICE_DIR}
 OUTPUT_NAME=${OUTPUT_NAME}
 LOG_SECONDS=${LOG_SECONDS}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
+DIAG_TIMEOUT=${DIAG_TIMEOUT}
 EVIDENCE_DIR=${EVIDENCE_DIR}
 CAPTURE_LOGS=${CAPTURE_LOGS}
 HILOG_CLEAR=${HILOG_CLEAR}
 CHECK_TOOL=${CHECK_TOOL}
 CHECK_SOC=${CHECK_SOC}
+COLLECT_DIAGS=${COLLECT_DIAGS}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 STRICT=${STRICT}
@@ -451,9 +497,12 @@ mkdir -p "${EVIDENCE_DIR}"
 
 SUMMARY="${EVIDENCE_DIR}/summary.txt"
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
+HDC_INFO="${EVIDENCE_DIR}/hdc-info.txt"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
 MODEL_INFO="${EVIDENCE_DIR}/model-strings-info.txt"
 SOC_CHECK_LOG="${EVIDENCE_DIR}/soc-preflight.log"
+TARGET_DIAG_LOG="${EVIDENCE_DIR}/target-diagnostics.log"
+RUNNER_DIAG_LOG="${EVIDENCE_DIR}/runner-diagnostics.log"
 TOOL_CHECK_LOG="${EVIDENCE_DIR}/model-run-tool-check.log"
 MKDIR_LOG="${EVIDENCE_DIR}/device-mkdir.log"
 REMOTE_CLEAN_LOG="${EVIDENCE_DIR}/remote-clean-output.log"
@@ -461,6 +510,8 @@ SEND_OMC_LOG="${EVIDENCE_DIR}/send-omc.log"
 SEND_INPUT_LOG="${EVIDENCE_DIR}/send-input.log"
 RUN_LOG="${EVIDENCE_DIR}/model-run-tool.log"
 REMOTE_LIST_LOG="${EVIDENCE_DIR}/remote-list-after-run.log"
+REMOTE_FILES_BEFORE_LOG="${EVIDENCE_DIR}/remote-files-before-run.log"
+REMOTE_FILES_AFTER_LOG="${EVIDENCE_DIR}/remote-files-after-run.log"
 HILOG_CLEAR_LOG="${EVIDENCE_DIR}/hilog-clear.log"
 HILOG_RAW="${EVIDENCE_DIR}/hilog.raw.log"
 HILOG_FILTERED="${EVIDENCE_DIR}/hilog.filtered.log"
@@ -520,6 +571,20 @@ fi
 HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
 
 {
+  echo "### hdc binary"
+  printf '%s\n' "${HDC_BIN}"
+  echo
+  echo "### hdc version"
+  "${HDC_BIN}" -v 2>&1 || "${HDC_BIN}" version 2>&1 || true
+  echo
+  echo "### hdc checkserver"
+  "${HDC_BIN}" checkserver 2>&1 || true
+  echo
+  echo "### hdc list targets -v"
+  "${HDC_BIN}" list targets -v 2>&1 || true
+} > "${HDC_INFO}"
+
+{
   echo "target=${TARGET}"
   echo "model_run_tool=${MODEL_RUN_TOOL}"
   echo "device_dir=${DEVICE_DIR}"
@@ -552,6 +617,13 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
   "${HDC_TARGET[@]}" shell uname -a 2>&1 || true
 } | tee "${TARGET_INFO}" >/dev/null
 
+# shellcheck disable=SC2016
+TARGET_DIAG_CMD='echo "### identity"; id 2>&1 || true; whoami 2>&1 || true; pwd 2>&1 || true; echo; echo "### kernel"; uname -a 2>&1 || true; echo; echo "### hdc shell path"; echo "$PATH" 2>&1 || true; echo; echo "### selected params"; for key in const.product.model const.product.name const.product.device const.product.board const.product.hardwareversion const.product.manufacturer const.product.software.version const.ohos.apiversion const.product.soc const.product.socversion const.soc_version ro.product.model ro.product.name ro.product.device ro.product.board ro.board.platform ro.hardware ro.soc.model ro.soc.manufacturer ro.build.version.incremental ro.build.version.release; do printf "%s=" "$key"; param get "$key" 2>&1 || true; done; echo; echo "### param scan"; param ls 2>&1 | grep -Ei "kirin|soc|chip|npu|hiai|ai|product|hardware|board|device|model|nn|neural" | head -400 || true; echo; echo "### process scan"; (ps -ef 2>/dev/null || ps -A 2>/dev/null || true) | grep -Ei "hiai|nn|npu|ai|model|neural" | head -160 || true; echo; echo "### storage"; df -h /data /data/local/tmp 2>&1 || true; echo; echo "### likely runtime libs"; for d in /system/lib64 /system/lib /vendor/lib64 /vendor/lib /chip_prod/lib64 /chip_prod/lib /data/local/tmp; do [ -d "$d" ] || continue; echo "# $d"; ls -l "$d"/libhiai* "$d"/libneural_network* "$d"/*nn* "$d"/*NN* 2>/dev/null || true; done'
+collect_remote_diag "target diagnostics" "${TARGET_DIAG_LOG}" "${TARGET_DIAG_CMD}"
+
+RUNNER_DIAG_CMD="echo '### runner path'; ls -l $(remote_quote "${MODEL_RUN_TOOL}") 2>&1 || true; echo; echo '### runner help'; $(remote_quote "${MODEL_RUN_TOOL}") --help 2>&1 || true; echo; echo '### runner strings'; if command -v strings >/dev/null 2>&1; then strings $(remote_quote "${MODEL_RUN_TOOL}") 2>/dev/null | grep -Ei 'usage|--model|--input|--output|soc|kirin|hiai|HIAI_F|nn|neural|cann|omc|offline|compat|compil|build|executor|device|version|model_run_tool|error|status|return' | head -220 || true; else echo 'strings unavailable'; fi"
+collect_remote_diag "runner diagnostics" "${RUNNER_DIAG_LOG}" "${RUNNER_DIAG_CMD}"
+
 SOC_CHECK_RESULT="SKIPPED"
 TARGET_SOC_VERSIONS=""
 if [ "${CHECK_SOC}" -eq 1 ]; then
@@ -560,8 +632,12 @@ if [ "${CHECK_SOC}" -eq 1 ]; then
     [ -n "${TARGET_SOC_VERSIONS}" ] || die "--target-soc must look like a Kirin target, for example kirin9020 or KirinX90"
     TARGET_SOC_SOURCE="cli/env"
   else
-    TARGET_SOC_VERSIONS="$(extract_soc_versions_from_text < "${TARGET_INFO}" || true)"
-    TARGET_SOC_SOURCE="target-info"
+    TARGET_SOC_SCAN_FILES=("${TARGET_INFO}")
+    if [ -f "${TARGET_DIAG_LOG}" ]; then
+      TARGET_SOC_SCAN_FILES+=("${TARGET_DIAG_LOG}")
+    fi
+    TARGET_SOC_VERSIONS="$(cat "${TARGET_SOC_SCAN_FILES[@]}" | extract_soc_versions_from_text || true)"
+    TARGET_SOC_SOURCE="target-info,target-diagnostics"
   fi
 
   {
@@ -610,13 +686,13 @@ fi
 if [ "${CAPTURE_LOGS}" -eq 1 ] && [ "${HILOG_CLEAR}" -eq 1 ]; then
   log "clearing hilog with ${HILOG_CLEAR_TIMEOUT}s timeout"
   set +e
-  run_with_timeout "${HILOG_CLEAR_TIMEOUT}" "${HILOG_CLEAR_LOG}" "${HDC_TARGET[@]}" hilog -r
+  run_with_timeout "${HILOG_CLEAR_TIMEOUT}" "${HILOG_CLEAR_LOG}" "${HDC_TARGET[@]}" shell "hilog -r"
   HILOG_CLEAR_STATUS=$?
   set -e
   if [ "${HILOG_CLEAR_STATUS}" -eq 124 ]; then
-    warn "hdc hilog -r timed out after ${HILOG_CLEAR_TIMEOUT}s; continuing without clearing logs"
+    warn "hdc shell hilog -r timed out after ${HILOG_CLEAR_TIMEOUT}s; continuing without clearing logs"
   elif [ "${HILOG_CLEAR_STATUS}" -ne 0 ]; then
-    warn "hdc hilog -r failed with status ${HILOG_CLEAR_STATUS}; continuing without clearing logs"
+    warn "hdc shell hilog -r failed with status ${HILOG_CLEAR_STATUS}; continuing without clearing logs"
   fi
 fi
 
@@ -658,6 +734,7 @@ fi
 
 : > "${SEND_INPUT_LOG}"
 REMOTE_INPUTS=""
+REMOTE_INPUT_FILES_FOR_DIAG=""
 for input_file in "${INPUT_FILES[@]}"; do
   input_base="$(basename "${input_file}")"
   remote_input="${DEVICE_DIR}/${input_base}"
@@ -674,7 +751,12 @@ for input_file in "${INPUT_FILES[@]}"; do
   else
     REMOTE_INPUTS="${REMOTE_INPUTS},${remote_input}"
   fi
+  REMOTE_INPUT_FILES_FOR_DIAG="${REMOTE_INPUT_FILES_FOR_DIAG} $(remote_quote "${remote_input}")"
 done
+
+REMOTE_FILES_FOR_DIAG="$(remote_quote "${REMOTE_OMC}") ${REMOTE_INPUT_FILES_FOR_DIAG} $(remote_quote "${OUTPUT_REMOTE}")"
+REMOTE_FILES_CMD="echo '### model/input/output files'; ls -l ${REMOTE_FILES_FOR_DIAG} 2>&1 || true; echo; echo '### hashes if available'; if command -v sha256sum >/dev/null 2>&1; then sha256sum ${REMOTE_FILES_FOR_DIAG} 2>&1 || true; elif command -v md5sum >/dev/null 2>&1; then md5sum ${REMOTE_FILES_FOR_DIAG} 2>&1 || true; else echo 'no sha256sum/md5sum on target'; fi; echo; echo '### work dir newest'; ls -lt $(remote_quote "${DEVICE_DIR}") 2>&1 | head -50 || true"
+collect_remote_diag "remote files before run" "${REMOTE_FILES_BEFORE_LOG}" "${REMOTE_FILES_CMD}"
 
 log "removing stale output"
 "${HDC_TARGET[@]}" shell "rm -f $(remote_quote "${OUTPUT_REMOTE}")" > "${REMOTE_CLEAN_LOG}" 2>&1 || true
@@ -686,21 +768,28 @@ set +e
 RUN_STATUS=${PIPESTATUS[0]}
 set -e
 MODEL_LOAD_FAILED=0
+RUN_FAILED=0
+RUN_FAILURE_REASON=""
 if file_matches "${RUN_LOG}" 'Load model .* failed|loading model .* failed|Model Process ret failed|ConstructWithOfflineModelBuffer failed|OH_NNCompilation_Build failed'; then
   MODEL_LOAD_FAILED=1
   warn "model_run_tool reached the model loader, but the model failed to load. This points at OMC/target SoC/runtime compatibility, not HAP signing or aa start."
 fi
 if [ "${RUN_STATUS}" -ne 0 ] || file_matches "${RUN_LOG}" 'error:|failed|No such file|not found|permission denied|Error Code'; then
-  if [ "${STRICT}" -eq 1 ]; then
-    if [ "${MODEL_LOAD_FAILED}" -eq 1 ]; then
-      die "model load failed; inspect ${RUN_LOG}, ${MODEL_INFO}, and ${TARGET_INFO}"
-    fi
-    die "model_run_tool failed; inspect ${RUN_LOG}"
+  RUN_FAILED=1
+  if [ "${MODEL_LOAD_FAILED}" -eq 1 ]; then
+    RUN_FAILURE_REASON="model load failed"
+  else
+    RUN_FAILURE_REASON="model_run_tool failed"
   fi
-  warn "model_run_tool did not look successful; continuing because --no-strict is set"
+  if [ "${STRICT}" -eq 1 ]; then
+    warn "${RUN_FAILURE_REASON}; collecting diagnostics before exiting"
+  else
+    warn "model_run_tool did not look successful; continuing because --no-strict is set"
+  fi
 fi
 
 "${HDC_TARGET[@]}" shell "ls -lt $(remote_quote "${DEVICE_DIR}") | head -30" > "${REMOTE_LIST_LOG}" 2>&1 || true
+collect_remote_diag "remote files after run" "${REMOTE_FILES_AFTER_LOG}" "${REMOTE_FILES_CMD}"
 
 if [ "${CAPTURE_LOGS}" -eq 1 ]; then
   log "waiting ${LOG_SECONDS}s for runner logs"
@@ -767,8 +856,12 @@ fi
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
   echo "compare_result=${COMPARE_RESULT}"
+  echo "run_failed=${RUN_FAILED:-0}"
+  echo "run_failure_reason=${RUN_FAILURE_REASON:-}"
   echo "model_load_failed=${MODEL_LOAD_FAILED:-0}"
   echo "capture_logs=${CAPTURE_LOGS}"
+  echo "collect_diagnostics=${COLLECT_DIAGS}"
+  echo "diag_timeout=${DIAG_TIMEOUT}"
   echo "strict=${STRICT}"
   echo "result=${RESULT}"
   echo
@@ -777,13 +870,18 @@ fi
   echo
   echo "important_files:"
   echo "- ${TARGET_INFO}"
+  echo "- ${HDC_INFO}"
   echo "- ${MODEL_INFO}"
   echo "- ${SOC_CHECK_LOG}"
+  echo "- ${TARGET_DIAG_LOG}"
+  echo "- ${RUNNER_DIAG_LOG}"
   echo "- ${TOOL_CHECK_LOG}"
   echo "- ${SEND_OMC_LOG}"
   echo "- ${SEND_INPUT_LOG}"
   echo "- ${RUN_LOG}"
   echo "- ${REMOTE_LIST_LOG}"
+  echo "- ${REMOTE_FILES_BEFORE_LOG}"
+  echo "- ${REMOTE_FILES_AFTER_LOG}"
   echo "- ${PULL_OUTPUT_LOG}"
   echo "- ${COMPARE_LOG}"
   echo "- ${HILOG_FILTERED}"
@@ -797,6 +895,10 @@ fi
 if [ "${RESULT}" = "PASS_CANDIDATE" ]; then
   log "PASS_CANDIDATE: output was pulled and matches the golden file."
   exit 0
+fi
+
+if [ "${STRICT}" -eq 1 ] && [ "${RUN_FAILED:-0}" -eq 1 ]; then
+  die "${RUN_FAILURE_REASON}; inspect ${RUN_LOG}, ${MODEL_INFO}, ${SOC_CHECK_LOG}, ${TARGET_DIAG_LOG}, ${RUNNER_DIAG_LOG}, ${REMOTE_FILES_AFTER_LOG}, and ${HILOG_FILTERED}"
 fi
 
 if [ "${STRICT}" -eq 1 ]; then

@@ -733,6 +733,52 @@ Current blocker for this path:
 - Re-run a known-good gelu/add `.omc` from the machine history to verify `model_run_tool` is still healthy.
 - Obtain or regenerate `SobelCustom.omc` for the target SoC/runtime if the prebuilt `kirin9020` Sobel model is incompatible.
 
+2026-08-04 diagnostic update:
+
+- Current root-cause classification:
+  - Confirmed not blocked by HAP signing, `aa start`, runner discovery, hdc connectivity, file transfer, or local path construction.
+  - The real run reached `/data/local/tmp/model_run_tool`, parsed `SobelCustom`, then failed at model load with `Load model SobelCustom failed. status:1`.
+  - Exact root cause cannot be proven from `status:1` alone. The leading hypothesis is `.omc` versus target SoC/runtime compatibility: the prebuilt Sobel `.omc` advertises `kirin9020`, while the target SoC was not visible in the previous `param get` snapshot. A target that is actually `kirin9020` could still fail due to HiAI/NNCore/runtime/custom-op model compatibility.
+- `scripts/test-naked-omc-vetest.sh` now collects broader diagnostics before and after model execution:
+
+  ```text
+  hdc-info.txt
+  target-diagnostics.log
+  runner-diagnostics.log
+  remote-files-before-run.log
+  remote-files-after-run.log
+  ```
+
+- Target SoC inference now uses both the compact `target-info.txt` and the broader `target-diagnostics.log` scan, so a SoC string present only in `param ls` can still satisfy the preflight.
+- Model-load failures no longer exit immediately. In strict mode the script now records post-run file state, filtered hilog, and `summary.txt`, then exits nonzero with links to the relevant evidence files.
+- HDC log clearing was corrected from the previously observed problematic `hdc hilog -r` style to `hdc shell "hilog -r"` with a timeout. `--no-clear-logs` remains available for machines where hilog clearing still hangs.
+- Local validation completed:
+
+  ```text
+  bash -n scripts/test-naked-omc-vetest.sh
+  shellcheck scripts/test-naked-omc-vetest.sh
+  dry-run with Sobel bundle and --target-soc kirin9020
+  fake hdc model-load-failure path writes summary and diagnostics before strict failure
+  fake hdc unknown-target-SoC path fails before sending files
+  fake hdc param-ls-only SoC discovery passes preflight
+  fake hdc clear-log path uses hdc shell "hilog -r"
+  ```
+
+Next decisive evidence needed from the real HarmonyOS PC:
+
+1. Run Sobel with explicit SoC if known:
+
+   ```bash
+   scripts/test-naked-omc-vetest.sh \
+     --target "$SN" \
+     --target-soc kirin9020 \
+     --bundle-dir "/root/z84378291/kirin-sobel-naked-omc-2026-08-03" \
+     --no-clear-logs
+   ```
+
+2. If Sobel still fails at model load, attach the evidence files listed above.
+3. Run a known-good `gelu_fp16.omc` or `add_1.omc` on the same target with the same script. If known-good models pass while Sobel fails, the runner/runtime path is proven and the Sobel prebuilt model must be regenerated or replaced for the target SoC/runtime.
+
 ## Re-entry Commands
 
 Open the HarmonyOS sample in DevEco Studio:

@@ -21,6 +21,30 @@ hdc -t "$SN" file recv /data/local/tmp/output_0 ./output.bin
 
 不再使用 `com.example.naticvetestdemo`、HAP 安装、`aa start --ps omPath` 这条路径。
 
+## 当前根因判断
+
+从最新真机日志可以确定：
+
+```text
+hdc 连接正常
+/data/local/tmp/model_run_tool 存在且可执行
+SobelCustom.omc 和 x.bin 已成功发送到 /data/local/tmp
+model_run_tool 已解析到模型名 SobelCustom
+失败发生在模型加载阶段：Load model SobelCustom failed. status:1
+```
+
+所以当前 blocker 不是 HAP、签名、`aa start`、runner 发现、文件传输或路径拼接。
+
+仅凭 `status:1` 还不能证明唯一根因。最强假设是 `.omc` 与目标 SoC/runtime 不兼容：
+
+```text
+当前 prebuilt SobelCustom.omc 暴露的 SoC hint 是 kirin9020
+目标 HarmonyOS PC 的真实 Kirin SoC 还没有被自动识别出来
+即使目标是 kirin9020，也仍可能是 runtime/HiAI/NNCore 版本或 custom-op 模型加载兼容性问题
+```
+
+下一次失败时必须看 evidence 里的诊断文件，而不是只看终端上的 `status:1`。
+
 ## 当前已准备文件
 
 Release:
@@ -136,6 +160,7 @@ scripts/test-naked-omc-vetest.sh \
 ```
 
 `--no-clear-logs` 是因为我们已经见过部分机器上 `hdc hilog -r` 可能卡住。
+脚本现在默认使用 `hdc shell "hilog -r"` 清理缓存日志；OpenHarmony HDC 文档里的清日志示例也是这个形式。`--no-clear-logs` 仍然保留，方便绕过目标机上任何 hilog 行为差异。
 
 如果已经知道目标 SoC，建议显式传入，脚本会在传文件和运行前做确定性 preflight：
 
@@ -208,18 +233,21 @@ scripts/test-naked-omc-vetest.sh
 
 ```text
 1. 检查 hdc 和 target。
-2. 从本地 .omc 提取 embedded SoC metadata。
-3. 从目标机器 param/uname 收集设备信息。
-4. 如果能确认 model SoC 和 target SoC 不匹配，严格模式下 fail fast。
-5. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
-6. 创建/确认 /data/local/tmp。
-7. 发送 .omc 和一个或多个输入 .bin。
-8. 删除旧的 /data/local/tmp/output_0。
-9. 执行 model_run_tool。
-10. 捕获 hilog。
-11. 拉回 /data/local/tmp/output_0。
-12. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
-13. 写 evidence summary。
+2. 记录 hdc binary、版本、checkserver、list targets -v。
+3. 从本地 .omc 提取 embedded SoC metadata。
+4. 从目标机器 param/uname/param ls/uname/process/runtime lib 扫描收集设备信息。
+5. 从 model_run_tool --help 和 strings 收集 runner 信息。
+6. 如果能确认 model SoC 和 target SoC 不匹配，严格模式下 fail fast。
+7. 检查 /data/local/tmp/model_run_tool 是否存在且可执行。
+8. 创建/确认 /data/local/tmp。
+9. 发送 .omc 和一个或多个输入 .bin。
+10. 记录运行前远端模型/输入/输出文件状态和 hash。
+11. 删除旧的 /data/local/tmp/output_0。
+12. 执行 model_run_tool。
+13. 如果模型加载失败，继续收集运行后文件状态、hilog 和 summary，然后再退出。
+14. 拉回 /data/local/tmp/output_0。
+15. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
+16. 写 evidence summary。
 ```
 
 Evidence 默认目录：
@@ -232,14 +260,19 @@ artifacts/naked-omc-runs/<timestamp>/
 
 ```text
 summary.txt
+hdc-info.txt
 target-info.txt
+target-diagnostics.log
+runner-diagnostics.log
 model-strings-info.txt
 soc-preflight.log
 model-run-tool-check.log
 send-omc.log
 send-input.log
 model-run-tool.log
+remote-files-before-run.log
 remote-list-after-run.log
+remote-files-after-run.log
 pull-output.log
 compare.log
 hilog.raw.log
@@ -288,6 +321,8 @@ no hdc targets found
 ```bash
 scripts/test-naked-omc-vetest.sh ... --no-clear-logs
 ```
+
+背景：HDC 官方命令里 `hdc hilog` 用于抓日志，清日志示例是 `hdc shell "hilog -r"`。脚本已经改成 shell 形式，并且有 timeout；如果目标机仍然卡住，就继续加 `--no-clear-logs`。
 
 没有 `output_0`：
 
@@ -340,6 +375,7 @@ kirin9020
 ```text
 model-strings-info.txt  记录从 .omc 里提取到的 normalized_soc_versions
 target-info.txt         记录目标机器 param/uname
+target-diagnostics.log  记录 param ls、process scan、runtime libs 等扩展诊断
 soc-preflight.log       记录 model SoC、target SoC、检查结果
 ```
 
@@ -371,6 +407,30 @@ hdc -t "$SN" shell "uname -a"
 ```
 
 同时用同一台机器 history 里已知能跑的 `gelu_fp16.omc` 或 `add_1.omc` 再跑一遍。如果 gelu/add 还能跑，而 Sobel load 失败，则 runner 路线成立，问题是这个 Sobel prebuilt `.omc` 不是目标机可加载的模型。需要拿目标 SoC 对应的 Sobel `.omc`，或者在正确 `--soc_version` 的 CANN/mobile-station 环境重新生成。
+
+如果这些 known-good 模型只用于确认 runner/runtime 是否健康，而目标 SoC 仍然无法自动识别，可以临时关闭 SoC preflight：
+
+```bash
+scripts/test-naked-omc-vetest.sh \
+  --target "$SN" \
+  --omc /data/model/gelu_fp16.omc \
+  --input /data/model/gelu_fp16_input.bin \
+  --skip-soc-check \
+  --no-compare \
+  --no-clear-logs
+```
+
+需要把这次运行的 evidence 目录贴回 issue，至少包括：
+
+```text
+summary.txt
+soc-preflight.log
+target-diagnostics.log
+runner-diagnostics.log
+model-run-tool.log
+remote-files-after-run.log
+hilog.filtered.log
+```
 
 Compare 失败：
 
