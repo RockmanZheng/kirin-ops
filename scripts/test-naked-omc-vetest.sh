@@ -48,8 +48,9 @@ EVIDENCE_TEXT_EXPLICIT=0
 OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
-LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline}"
+LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Model Process|status:1}"
 RUNNER_LAUNCH_ERROR_RE="${RUNNER_LAUNCH_ERROR_RE:-inaccessible or not found|no such file|not found|permission denied|exec format error|cannot execute binary file|cannot link executable|bad elf|invalid elf|library .*not found|linker .*not found}"
+FAILURE_HINT_RE="${FAILURE_HINT_RE:-Load model|loading model|Model Process|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Recompile failed|BuildModelByHcl failed|status:1}"
 
 usage() {
   cat <<'USAGE'
@@ -149,6 +150,21 @@ print_log_excerpt() {
   [ -s "${path}" ] || return 0
   warn "${label} excerpt (${path}, first ${max_lines} lines):"
   sed -n "1,${max_lines}p" "${path}" | sed 's/^/[kirin-naked-omc]   /' >&2 || true
+}
+
+print_matching_excerpt() {
+  local label="$1"
+  local path="$2"
+  local pattern="$3"
+  local max_lines="${4:-120}"
+  local matches
+
+  [ -s "${path}" ] || return 0
+  matches="$(grep -Eai "${pattern}" "${path}" || true)"
+  [ -n "${matches}" ] || return 0
+
+  warn "${label} matching excerpt (${path}, first ${max_lines} matches):"
+  printf '%s\n' "${matches}" | sed -n "1,${max_lines}p" | sed 's/^/[kirin-naked-omc]   /' >&2 || true
 }
 
 sha256_file() {
@@ -1168,6 +1184,12 @@ if [ "${CAPTURE_LOGS}" -eq 1 ]; then
   sleep "${LOG_SECONDS}"
   cleanup
   grep -E "${LOG_RE}" "${HILOG_RAW}" > "${HILOG_FILTERED}" || true
+fi
+
+if [ "${RUN_FAILED:-0}" -eq 1 ]; then
+  print_log_excerpt "soc preflight" "${SOC_CHECK_LOG}" 80
+  print_matching_excerpt "model_run_tool failure" "${RUN_LOG}" "${FAILURE_HINT_RE}" 80
+  print_matching_excerpt "hilog failure" "${HILOG_FILTERED}" "${FAILURE_HINT_RE}" 160
 fi
 
 OUTPUT_PULLED=0
