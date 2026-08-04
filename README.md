@@ -14,10 +14,10 @@ This repository is intentionally scoped to portable scripts, setup notes, checkp
 
 Run the first real-device spike on a HarmonyOS phone with a Kirin chip:
 
-1. Build the Sobel custom operator on Linux.
-2. Convert the model with ATC into a real `SobelCustom.omc`.
-3. Package the HarmonyOS `Soble` app with DevEco.
-4. Install and validate NPU inference on the physical phone.
+1. Fast path: run the prebuilt `SobelCustom.omc` on a real device.
+2. Full toolchain path: build the Sobel custom operator on Linux and convert it with ATC.
+3. App path: package the HarmonyOS `Soble` app with DevEco when app UI validation is needed.
+4. Validate NPU inference and collect device evidence.
 
 ## Known Boundary
 
@@ -27,8 +27,16 @@ See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the c
 
 For physical-device validation commands, see `docs/kirin-real-device-test-playbook.md`.
 
+For the naked `.omc` runner path, see `docs/kirin-naked-omc-test-playbook.md`.
+
 Scripted HDC test wrapper:
 
 ```bash
 scripts/test-harmonyos-pc.sh --hap /path/to/entry-default-signed.hap
+```
+
+Scripted naked OMC runner wrapper:
+
+```bash
+scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin-sobel-naked-omc-2026-08-03
 ```

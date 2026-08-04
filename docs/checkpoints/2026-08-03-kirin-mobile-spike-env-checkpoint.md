@@ -616,6 +616,61 @@ Interpretation:
 - It still needs DevEco debug signing or configured signing credentials before installation on a physical device.
 - Runtime success still depends on the target Huawei phone/tablet/2in1 supporting the `.omc` target SoC and the required HiAI/CANN Kit runtime.
 
+## Naked OMC Vetest Runner Path
+
+2026-08-03 update:
+
+- A separate path was prepared for testing a naked `.omc` without repackaging the Soble HAP for every model.
+- This path still requires a HarmonyOS native test runner application. The runner convention comes from `cann-recipes-harmony-infer/docs/ascend_ops_guide.md`:
+
+  ```text
+  bundleName: com.example.naticvetestdemo
+  ability: EntryAbility
+  device dir: /mnt/hmdfs/100/account/device_view/local/files/Docs/Download/com.example.naticvetestdemo
+  start args: --ps path <input.bin> --ps omPath <model.omc>
+  output: output0.bin
+  ```
+
+- Added script:
+
+  ```text
+  scripts/test-naked-omc-vetest.sh
+  ```
+
+- Added playbook:
+
+  ```text
+  docs/kirin-naked-omc-test-playbook.md
+  ```
+
+- Prepared local release bundle:
+
+  ```text
+  artifacts/releases/kirin-sobel-naked-omc-2026-08-03.zip
+  sha256: 7fd2e93320eb78cca820ed1a599cead439bca59675552a7a4dfc6860316118ba
+  ```
+
+- The bundle contains:
+
+  ```text
+  SobelCustom.omc
+  SobelCustom.om
+  x.bin
+  y.bin
+  SHA256SUMS
+  README.txt
+  ```
+
+- `x.bin` and `y.bin` were generated from `ops/ascendc/src/sobel_custom/test/gen_data.py` in a temporary Python virtual environment, not in the source checkout.
+- `scripts/test-naked-omc-vetest.sh --bundle-dir artifacts/naked-omc/kirin-sobel-naked-omc-2026-08-03 --dry-run` resolves the expected files and local `hdc` path correctly.
+- `bash -n scripts/test-naked-omc-vetest.sh` passed.
+
+Current blocker for this path:
+
+- We still do not have the signed `com.example.naticvetestdemo` runner HAP or its source in this workspace.
+- If the HarmonyOS PC already has that runner installed, the naked OMC test can run immediately.
+- If it is not installed, obtain the signed runner HAP from colleagues or the CANN Kit vetest/debugging sample, then pass it to the script with `--runner-hap`.
+
 ## Re-entry Commands
 
 Open the HarmonyOS sample in DevEco Studio:
