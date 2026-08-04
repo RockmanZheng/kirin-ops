@@ -192,6 +192,18 @@ scripts/test-harmonyos-pc.sh \
 
 Remove `--no-strict` only when the target can install the package and you are ready to tap `NPU推理` during the log capture window.
 
+If tracing shows the script stopped at `hdc -t <target> hilog -r`, skip the optional log-clear step:
+
+```bash
+scripts/test-harmonyos-pc.sh \
+  --target <target-id-from-hdc-list-targets> \
+  --hap /absolute/path/to/entry-default-signed-or-accepted.hap \
+  --no-clear-logs \
+  --no-strict
+```
+
+`--no-clear-logs` still captures `hilog`; it only avoids clearing old logs before the capture window.
+
 ## Verify HAP Contents Before Transfer
 
 Run this before copying the HAP to another machine:
@@ -299,6 +311,12 @@ If log clearing is supported on the target, clear first:
 hdc -t "$TARGET" hilog -r || true
 ```
 
+Some HarmonyOS PC / HDC combinations hang on `hdc hilog -r`. If that happens, do not block the run on log clearing. Use:
+
+```bash
+scripts/test-harmonyos-pc.sh --target "$TARGET" --hap "$HAP" --no-clear-logs --no-strict
+```
+
 Then start the app again and watch the filtered stream.
 
 ## Run NPU Inference
@@ -391,6 +409,16 @@ Likely causes:
 Action:
 - enable developer/HDC debugging on the device
 - reconnect USB or run hdc tconn for TCP mode
+```
+
+Script trace stops at `hdc -t <target> hilog -r`:
+
+```text
+Likely cause: the target/HDC build hangs while clearing hilog.
+Action:
+- rerun with --no-clear-logs
+- keep log capture enabled so hilog.raw.log and hilog.filtered.log are still saved
+- inspect artifacts/real-device-runs/<timestamp>/hilog-clear.log if present
 ```
 
 ## Evidence Bundle To Save

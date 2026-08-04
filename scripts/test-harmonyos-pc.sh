@@ -11,10 +11,12 @@ TARGET="${TARGET:-}"
 BUNDLE="${BUNDLE:-com.example.hdc_sobel_demo}"
 ABILITY="${ABILITY:-EntryAbility}"
 LOG_SECONDS="${LOG_SECONDS:-90}"
+HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 INSTALL=1
 START_APP=1
 CAPTURE_LOGS=1
+HILOG_CLEAR=1
 STRICT=1
 UNINSTALL_FIRST=0
 BUGREPORT=0
@@ -39,13 +41,17 @@ Options:
   --no-install           Do not install the HAP.
   --no-start             Do not start the app.
   --no-logs              Do not capture hilog.
+  --no-clear-logs        Do not run "hdc hilog -r" before capture.
+  --hilog-clear-timeout N
+                         Seconds to wait for "hdc hilog -r". Default: 5
   --no-strict            Do not exit nonzero when success log markers are missing.
   --bugreport            Save hdc bugreport after the run.
   --dry-run              Print resolved settings and exit.
   -h, --help             Show this help.
 
 Environment overrides:
-  HAP, TARGET, BUNDLE, ABILITY, LOG_SECONDS, EVIDENCE_DIR, LOG_RE
+  HAP, TARGET, BUNDLE, ABILITY, LOG_SECONDS, HILOG_CLEAR_TIMEOUT,
+  EVIDENCE_DIR, LOG_RE
 
 Typical run:
   scripts/test-harmonyos-pc.sh --hap /path/to/entry-default-signed.hap
@@ -71,6 +77,28 @@ warn() {
 run_cmd() {
   log "+ $*"
   "$@"
+}
+
+run_with_timeout() {
+  local seconds="$1"
+  local output_file="$2"
+  shift 2
+
+  "$@" > "${output_file}" 2>&1 &
+  local cmd_pid=$!
+  local waited=0
+
+  while kill -0 "${cmd_pid}" >/dev/null 2>&1; do
+    if [ "${waited}" -ge "${seconds}" ]; then
+      kill "${cmd_pid}" >/dev/null 2>&1 || true
+      wait "${cmd_pid}" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  wait "${cmd_pid}"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -121,6 +149,15 @@ while [ "$#" -gt 0 ]; do
       CAPTURE_LOGS=0
       shift
       ;;
+    --no-clear-logs)
+      HILOG_CLEAR=0
+      shift
+      ;;
+    --hilog-clear-timeout)
+      [ "$#" -ge 2 ] || die "--hilog-clear-timeout requires a number"
+      HILOG_CLEAR_TIMEOUT="$2"
+      shift 2
+      ;;
     --no-strict)
       STRICT=0
       shift
@@ -153,6 +190,16 @@ if [ "${LOG_SECONDS}" -lt 1 ]; then
   die "--log-seconds must be at least 1"
 fi
 
+case "${HILOG_CLEAR_TIMEOUT}" in
+  ''|*[!0-9]*)
+    die "--hilog-clear-timeout must be a positive integer"
+    ;;
+esac
+
+if [ "${HILOG_CLEAR_TIMEOUT}" -lt 1 ]; then
+  die "--hilog-clear-timeout must be at least 1"
+fi
+
 if ! command -v hdc >/dev/null 2>&1 && [ -f "${ROOT}/scripts/local-macos-env.sh" ]; then
   # On this Mac workspace, hdc is usually provided by command-line-tools.
   # shellcheck disable=SC1091
@@ -176,10 +223,12 @@ TARGET=${TARGET:-<auto>}
 BUNDLE=${BUNDLE}
 ABILITY=${ABILITY}
 LOG_SECONDS=${LOG_SECONDS}
+HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 EVIDENCE_DIR=${EVIDENCE_DIR}
 INSTALL=${INSTALL}
 START_APP=${START_APP}
 CAPTURE_LOGS=${CAPTURE_LOGS}
+HILOG_CLEAR=${HILOG_CLEAR}
 STRICT=${STRICT}
 UNINSTALL_FIRST=${UNINSTALL_FIRST}
 BUGREPORT=${BUGREPORT}
@@ -199,6 +248,7 @@ START_LOG="${EVIDENCE_DIR}/aa-start.log"
 TARGET_INFO="${EVIDENCE_DIR}/target-info.txt"
 HILOG_RAW="${EVIDENCE_DIR}/hilog.raw.log"
 HILOG_FILTERED="${EVIDENCE_DIR}/hilog.filtered.log"
+HILOG_CLEAR_LOG="${EVIDENCE_DIR}/hilog-clear.log"
 BM_DUMP="${EVIDENCE_DIR}/bm-dump.txt"
 BUGREPORT_FILE="${EVIDENCE_DIR}/bugreport.txt"
 
@@ -267,8 +317,19 @@ HDC_TARGET=("${HDC_BIN}" -t "${TARGET}")
   "${HDC_TARGET[@]}" shell uname -a 2>&1 || true
 } | tee "${TARGET_INFO}" >/dev/null
 
-if [ "${CAPTURE_LOGS}" -eq 1 ]; then
-  "${HDC_TARGET[@]}" hilog -r >/dev/null 2>&1 || true
+if [ "${CAPTURE_LOGS}" -eq 1 ] && [ "${HILOG_CLEAR}" -eq 1 ]; then
+  log "clearing hilog with ${HILOG_CLEAR_TIMEOUT}s timeout"
+  set +e
+  run_with_timeout "${HILOG_CLEAR_TIMEOUT}" "${HILOG_CLEAR_LOG}" "${HDC_TARGET[@]}" hilog -r
+  HILOG_CLEAR_STATUS=$?
+  set -e
+  if [ "${HILOG_CLEAR_STATUS}" -eq 124 ]; then
+    warn "hdc hilog -r timed out after ${HILOG_CLEAR_TIMEOUT}s; continuing without clearing logs"
+  elif [ "${HILOG_CLEAR_STATUS}" -ne 0 ]; then
+    warn "hdc hilog -r failed with status ${HILOG_CLEAR_STATUS}; continuing without clearing logs"
+  fi
+elif [ "${CAPTURE_LOGS}" -eq 1 ]; then
+  log "skipping hilog clear"
 fi
 
 if [ "${UNINSTALL_FIRST}" -eq 1 ]; then
@@ -375,6 +436,8 @@ fi
   echo "install=${INSTALL}"
   echo "start_app=${START_APP}"
   echo "capture_logs=${CAPTURE_LOGS}"
+  echo "hilog_clear=${HILOG_CLEAR}"
+  echo "hilog_clear_timeout=${HILOG_CLEAR_TIMEOUT}"
   echo "strict=${STRICT}"
   echo
   echo "required_log_markers:"
