@@ -566,6 +566,56 @@ The first physical-phone spike is successful only when all are true:
   OH_NNExecutor_RunSync success
   ```
 
+## Prebuilt Sobel OMC Demo Shortcut
+
+2026-08-03 update:
+
+- `cann-recipes-harmony-infer` itself still has no checked-in `.om`, `.omc`, or `.onnx` model artifact.
+- A separate GitCode codelab demo was found and cloned into the ignored local workspace:
+
+  ```text
+  artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo
+  ```
+
+- Source:
+
+  ```text
+  https://gitcode.com/wang_shuli/cannkit-codelab-sobeldemo-cpp.git
+  commit 4ed6225
+  ```
+
+- That demo includes real prebuilt rawfile model artifacts:
+
+  ```text
+  entry/src/main/resources/rawfile/SobelCustom.om
+  entry/src/main/resources/rawfile/SobelCustom.omc
+  ```
+
+- `SobelCustom.omc` is 22,142 bytes and is packaged into the HAP under `resources/rawfile/SobelCustom.omc`.
+- The demo code loads `SobelCustom.omc` from rawfile and sets the execution device order to NPU.
+- Command-line build succeeded on the Mac:
+
+  ```bash
+  source /Users/zhenglewen/projects/kirin-ops/scripts/local-macos-env.sh
+  hvigorw assembleHap --mode module -p module=entry@default --no-daemon --stacktrace
+  ```
+
+- Output artifact:
+
+  ```text
+  artifacts/prebuilt-demos/cannkit-codelab-sobeldemo-cpp/HDC_Sobel_Demo/entry/build/default/outputs/default/entry-default-unsigned.hap
+  ```
+
+- Build result: `BUILD SUCCESSFUL`; native `arm64-v8a` and `x86_64` libs were produced.
+- Important caveat: the CLI build skipped signing because the demo has no `signingConfigs` in `build-profile.json5`.
+- `hdc list targets` returned `[Empty]`; no HarmonyOS device was connected during this checkpoint.
+
+Interpretation:
+
+- This prebuilt demo is the fastest path to the first physical-device spike because it skips the Linux custom-op/ATC step.
+- It still needs DevEco debug signing or configured signing credentials before installation on a physical device.
+- Runtime success still depends on the target Huawei phone/tablet/2in1 supporting the `.omc` target SoC and the required HiAI/CANN Kit runtime.
+
 ## Re-entry Commands
 
 Open the HarmonyOS sample in DevEco Studio:
