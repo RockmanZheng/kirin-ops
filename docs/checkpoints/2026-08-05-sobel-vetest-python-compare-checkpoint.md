@@ -64,7 +64,24 @@ Expected success signal:
 ```text
 [kirin-naked-omc] checking output with Python precision validator: ...
 [kirin-naked-omc] golden compare passed
-[kirin-naked-omc] PASS_CANDIDATE
+[kirin-naked-omc] PASS: output was pulled and passed golden comparison.
 ```
 
 The evidence `compare.log` should include `decision=PASS_ACCURACY_THRESHOLD`.
+
+## PASS status and console color follow-up
+
+Issue #4 latest real-device run on `2026-08-05T07:36:16Z` passed the Python precision validator:
+
+```text
+[kirin-naked-omc] checking output with Python precision validator: /root/z84378291/kirin-ops/scripts/compare-sobel-output.py
+[kirin-naked-omc] golden compare passed
+```
+
+The prior final status was `PASS_CANDIDATE`; that is now promoted to `PASS` because the byte-compare path has been retired and Python precision validation is the precision contract.
+
+Console color policy:
+
+- Interactive terminals, including MobaXterm, auto-render ANSI colors.
+- `FORCE_COLOR=1` or `CLICOLOR_FORCE=1` forces color.
+- `NO_COLOR=1` disables auto-color for copy/paste logs and CI unless color is explicitly forced.

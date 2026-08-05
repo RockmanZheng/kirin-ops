@@ -151,18 +151,41 @@ Multi-input example, matching the observed model_run_tool convention:
 USAGE
 }
 
+COLOR_RESET=""
+COLOR_INFO=""
+COLOR_WARN=""
+COLOR_ERROR=""
+COLOR_SUCCESS=""
+COLOR_FORCE=0
+if [ "${FORCE_COLOR:-}" = "1" ] || [ "${CLICOLOR_FORCE:-}" = "1" ]; then
+  COLOR_FORCE=1
+fi
+if [ "${COLOR_FORCE}" -eq 1 ] || {
+  [ -z "${NO_COLOR:-}" ] && { [ -t 1 ] || [ -t 2 ]; }
+}; then
+  COLOR_RESET="$(printf '\033[0m')"
+  COLOR_INFO="$(printf '\033[36m')"
+  COLOR_WARN="$(printf '\033[33m')"
+  COLOR_ERROR="$(printf '\033[31m')"
+  COLOR_SUCCESS="$(printf '\033[1;32m')"
+fi
+
 log() {
-  printf '[kirin-naked-omc] %s\n' "$*"
+  printf '%s[kirin-naked-omc]%s %s\n' "${COLOR_INFO}" "${COLOR_RESET}" "$*"
+}
+
+log_success() {
+  printf '%s[kirin-naked-omc] PASS:%s %s\n' "${COLOR_SUCCESS}" "${COLOR_RESET}" "$*"
 }
 
 warn() {
-  printf '[kirin-naked-omc] WARN: %s\n' "$*" >&2
+  printf '%s[kirin-naked-omc] WARN:%s %s\n' "${COLOR_WARN}" "${COLOR_RESET}" "$*" >&2
 }
 
 die() {
   local message="$*"
 
-  printf '[kirin-naked-omc] ERROR: %s\n' "${message}" >&2
+  printf '%s[kirin-naked-omc] ERROR:%s %s\n' "${COLOR_ERROR}" "${COLOR_RESET}" "${message}" >&2
   if [ "${EVIDENCE_INITIALIZED:-0}" -eq 1 ] && [ "${EXPORT_IN_PROGRESS:-0}" -eq 0 ]; then
     write_failure_summary_if_missing "${message}" || true
     export_evidence_bundle || true
@@ -1565,7 +1588,7 @@ fi
 
 RESULT="NOT_CONFIRMED"
 if [ "${COMPARE_RESULT}" = "PASS" ]; then
-  RESULT="PASS_CANDIDATE"
+  RESULT="PASS"
 elif [ "${OUTPUT_PULLED}" -eq 1 ] && [ "${COMPARE}" -eq 0 ]; then
   RESULT="PASS_OUTPUT_PULLED_NO_COMPARE"
 elif [ "${OUTPUT_PULLED}" -eq 1 ]; then
@@ -1643,8 +1666,8 @@ if [ "${CAPTURE_LOGS}" -eq 1 ]; then
   log "filtered hilog: ${HILOG_FILTERED}"
 fi
 
-if [ "${RESULT}" = "PASS_CANDIDATE" ]; then
-  log "PASS_CANDIDATE: output was pulled and passed golden comparison."
+if [ "${RESULT}" = "PASS" ]; then
+  log_success "output was pulled and passed golden comparison."
   exit 0
 fi
 

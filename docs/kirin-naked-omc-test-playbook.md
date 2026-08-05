@@ -598,11 +598,13 @@ summary.txt 里 result=PASS_OUTPUT_PULLED_NO_COMPARE
 更强的成功标准：
 
 ```text
-output_0 与 y.bin 完全一致
-summary.txt 里 result=PASS_CANDIDATE
+output_0 通过 Python 精度验证脚本
+summary.txt 里 result=PASS
 ```
 
-如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，主测试脚本会通过 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 Python 精度验证脚本通过，`PASS` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，主测试脚本会通过 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+
+交互终端里脚本会自动输出 ANSI 颜色，MobaXterm 会直接渲染：普通状态为青色，`WARN` 为黄色，`ERROR` 为红色，最终 `PASS` 为绿色。如果需要强制彩色输出，设置 `FORCE_COLOR=1` 或 `CLICOLOR_FORCE=1`；如果需要干净 copy/paste 日志，设置 `NO_COLOR=1`。
 
 ## 常见问题
 
