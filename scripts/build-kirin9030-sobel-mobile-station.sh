@@ -173,17 +173,30 @@ perl -0pi -e 's/-j\$\(nproc\)/-j\${KIRIN_BUILD_JOBS:-\$(nproc)}/g' build_and_ins
 
 # dav_l311 provides Transpose4DImpl, while the public wrapper compiles a cSize==1
 # branch that references TransposeUB2UBImpl, which is absent for this architecture.
+perl -0pi -e 's/template <typename T, typename U>\n__aicore__ inline T CeilDiv\(T x, U y\)\n\{\n    return y == 0 \? x : \(1 \+ \(\(x - y\) \+ \(y - 2\) - 1\) \/ \(y - 2\)\);\n\}/template <typename T, typename U>\n__aicore__ inline T CeilDiv(T x, U y)\n{\n    return y == 0 ? x : (1 + ((x - y) + (y - 2) - 1) \/ (y - 2));\n}\n\n__aicore__ inline uint32_t DivCeil(uint32_t x, uint32_t y)\n{\n    return y == 0 ? x : (x + y - 1) \/ y;\n}\n\n__aicore__ inline uint32_t Ceil32Blocks(uint32_t bytes)\n{\n    return DivCeil(bytes, 32);\n}/g' op_kernel/sobel_custom_base.h
+perl -0pi -e 's/constexpr int32_t BUFFER_NUM = 2; \/\/ tensor num for each queue/constexpr int32_t BUFFER_NUM = 2; \/\/ tensor num for each queue\nconstexpr uint32_t TRANSPOSE_TMP_BYTES = 8192;/g' op_kernel/sobel_custom.cpp
+perl -0pi -e 's/pipe\.InitBuffer\(calcBuf, \(tileLength \* 4 \+ grayLength \* 14 \+ w \* 12\)\);/pipe.InitBuffer(calcBuf, (TRANSPOSE_TMP_BYTES + tileLength * 4 + grayLength * 14 + w * 12));/g' op_kernel/sobel_custom.cpp
+perl -0pi -e 's/calcBuf\.GetWithOffset<([^>]+)>\(([^,\n]+), ([^)]+)\)/calcBuf.GetWithOffset<$1>($2, TRANSPOSE_TMP_BYTES + $3)/g' op_kernel/sobel_custom.cpp
+perl -0pi -e 's/SobelCustom::CeilDiv\(([^,\n]+?)\s*,\s*32\)/SobelCustom::Ceil32Blocks($1)/g' op_kernel/sobel_custom.cpp
 perl -0pi -e 's/uint32_t offset;\n/uint32_t offset = 0;\n/g; s/\(0 < j < cntW - 1\)/(0 < j \&\& j < cntW - 1)/g; s/AscendC::Transpose\(tempTensor0, xLocal, stackBuffer, transposeParams\);/#if __NPU_ARCH__ == 3113\n        AscendC::Transpose4DImpl(tempTensor0, xLocal, stackBuffer, transposeParams);\n#else\n        AscendC::Transpose(tempTensor0, xLocal, stackBuffer, transposeParams);\n#endif/g' op_kernel/sobel_custom.cpp
 perl -0pi -e 's/AscendC::Add\(tmpBuf0, dx, dy, w \* \(h - 2\)\);\n        \/\/ half->u8/AscendC::Add(tmpBuf0, dx, dy, w * (h - 2));\n        AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));\n        \/\/ half->u8/g' op_kernel/sobel_custom.cpp
-perl -0pi -e 's/cntH = SobelCustom::CeilDiv\(this->H, h\);/cntH = SobelCustom::CeilDiv(this->H - 2, h - 2);/g; s/cntW = SobelCustom::CeilDiv\(this->W, w\);/cntW = SobelCustom::CeilDiv(this->W - 2, w - 2);/g' op_kernel/sobel_custom.cpp
 
 compute_unit_block="$(grep -A4 '"ASCEND_COMPUTE_UNIT"' CMakePresets.json || true)"
 grep -q '"value": "kirin9030"' <<<"${compute_unit_block}" || die "failed to set ASCEND_COMPUTE_UNIT"
 grep -q 'AddConfig("kirin9030"' op_host/sobel_custom.cpp || die "failed to set AddConfig"
+grep -q 'Ceil32Blocks' op_kernel/sobel_custom_base.h || die "failed to add true 32-byte ceil helper"
+grep -q 'TRANSPOSE_TMP_BYTES = 8192' op_kernel/sobel_custom.cpp || die "failed to add dedicated transpose scratch bytes"
+grep -q 'TRANSPOSE_TMP_BYTES + tileLength \* 4' op_kernel/sobel_custom.cpp || die "failed to grow calcBuf for transpose scratch"
+grep -q 'GetWithOffset<T>(tileLength, TRANSPOSE_TMP_BYTES + tileLength \* 1)' op_kernel/sobel_custom.cpp || die "failed to move tempTensor0 behind transpose scratch"
 grep -q 'Transpose4DImpl' op_kernel/sobel_custom.cpp || die "failed to apply dav_l311 transpose patch"
 grep -q 'Mins(tmpBuf0, tmpBuf0, half(255)' op_kernel/sobel_custom.cpp || die "failed to apply uint8 clamp patch"
-grep -q 'CeilDiv(this->H - 2, h - 2)' op_kernel/sobel_custom.cpp || die "failed to apply output-height tile count patch"
-grep -q 'CeilDiv(this->W - 2, w - 2)' op_kernel/sobel_custom.cpp || die "failed to apply output-width tile count patch"
+grep -q 'cntH = SobelCustom::CeilDiv(this->H, h);' op_kernel/sobel_custom.cpp || die "unexpected output-height tile count patch"
+grep -q 'cntW = SobelCustom::CeilDiv(this->W, w);' op_kernel/sobel_custom.cpp || die "unexpected output-width tile count patch"
+grep -q 'Ceil32Blocks(w \* c \* sizeof(T)' op_kernel/sobel_custom.cpp || die "failed to patch CopyIn 32-byte stride helper"
+grep -q 'Ceil32Blocks(w \* sizeof(T)' op_kernel/sobel_custom.cpp || die "failed to patch CopyOut 32-byte stride helper"
+if grep -q 'CeilDiv(this->H - 2' op_kernel/sobel_custom.cpp || grep -q 'CeilDiv(this->W - 2' op_kernel/sobel_custom.cpp; then
+  die "bad tile count patch is still present"
+fi
 
 set +e +u
 source "${KIRIN_CANN_HOME}/set_env.sh" >"${ART}/set_env.stdout" 2>"${ART}/set_env.stderr"

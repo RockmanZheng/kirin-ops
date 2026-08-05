@@ -297,3 +297,52 @@ cntW = SobelCustom::CeilDiv(this->W, w)
 CopyIn dstStride uses SobelCustom::Ceil32Blocks(...)
 CopyOut last-column srcStride uses SobelCustom::Ceil32Blocks(...)
 ```
+
+## Kirin9030 Build Sync
+
+Date: 2026-08-04
+
+After the 910B2 accuracy fix landed, `scripts/build-kirin9030-sobel-mobile-station.sh`
+was checked and still had the bad `CeilDiv(H - 2, h - 2)` /
+`CeilDiv(W - 2, w - 2)` scratch patch. The Kirin9030 build path was synced to
+the same vector fix:
+
+```text
+TRANSPOSE_TMP_BYTES=8192
+cntH = SobelCustom::CeilDiv(this->H, h)
+cntW = SobelCustom::CeilDiv(this->W, w)
+CopyIn dstStride uses SobelCustom::Ceil32Blocks(...)
+CopyOut last-column srcStride uses SobelCustom::Ceil32Blocks(...)
+```
+
+Build command:
+
+```bash
+scripts/build-kirin9030-sobel-mobile-station.sh \
+  --build-name kirin9030_sobel_vector_fix_20260804_01 \
+  --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
+  --pull-to-dir artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804 \
+  --jobs 8
+```
+
+Build result:
+
+```text
+remote_artifact=/data1/z84378291/artifacts/kirin9030_sobel_vector_fix_20260804_01
+local_model_files=artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804
+build_status=0
+atc_status=0
+SobelCustom_kirin9030.omc bytes=31886
+omc_sha256=7f93d3c17806d04d0893583beff65274acb2ce318e3da6d64ddd80c5f29461c6
+x_sha256=9f2f4d02d225403d3f480b9e88bb7b2b362f1f8a1751c6e34041d38b0935f03b
+y_sha256=4f2655e865146d12cfc0513fca54040746c830f23120905079bdec24d3d0e8b1
+```
+
+Packaged release:
+
+```text
+tag=kirin9030-sobel-custom-vector-fix-2026-08-04
+url=https://github.com/RockmanZheng/kirin-ops/releases/tag/kirin9030-sobel-custom-vector-fix-2026-08-04
+zip=artifacts/releases/kirin9030-sobel-custom-vector-fix-2026-08-04.zip
+zip_sha256=0094517a8e25f65578b68cc2f4bc9562c35dcf2624100f92a3b24197c1a47058
+```

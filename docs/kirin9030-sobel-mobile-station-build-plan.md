@@ -35,7 +35,13 @@ Apply the Kirin9030 Sobel compatibility patch only in the scratch copy:
 - `op_kernel/sobel_custom.cpp`:
   - fix the invalid C++ chained comparison `0 < j < cntW - 1`;
   - initialize `offset` defensively;
-  - for `__NPU_ARCH__ == 3113` call `AscendC::Transpose4DImpl` directly.
+  - for `__NPU_ARCH__ == 3113` call `AscendC::Transpose4DImpl` directly;
+  - reserve dedicated transpose scratch so `Transpose4DImpl` does not overlap
+    `tempTensor0`;
+  - keep the original tile-count calls through `CeilDiv(H, h)` and
+    `CeilDiv(W, w)`;
+  - use a true `ceil(bytes / 32)` helper for local `DataCopyPad` stride gaps;
+  - clamp Sobel magnitude before the final `uint8` cast.
 
 Why the transpose patch is needed: Kirin9030 maps to `dav_l311`. The CANN 9.0.0
 `dav_l311` implementation provides `Transpose4DImpl`, but the public 4D
@@ -78,18 +84,19 @@ If the Sobel ONNX/input/golden fixtures already exist on the remote host:
 ```bash
 scripts/build-kirin9030-sobel-mobile-station.sh \
   --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
-  --pull-to-dir artifacts/remote-pulled/kirin9030-sobel-2026-08-04
+  --build-name kirin9030_sobel_vector_fix_20260804_01 \
+  --pull-to-dir artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804
 ```
 
 Then package the pulled files:
 
 ```bash
 scripts/package-naked-omc-bundle.sh \
-  --name kirin9030-sobel-custom-2026-08-04 \
-  --description "SobelCustom Kirin9030 OMC built with x86 mobile-station CANN 9.0.0 on npu-group-3" \
-  --omc artifacts/remote-pulled/kirin9030-sobel-2026-08-04/SobelCustom_kirin9030.omc \
-  --input artifacts/remote-pulled/kirin9030-sobel-2026-08-04/x.bin \
-  --golden artifacts/remote-pulled/kirin9030-sobel-2026-08-04/y.bin \
+  --name kirin9030-sobel-custom-vector-fix-2026-08-04 \
+  --description "SobelCustom Kirin9030 OMC built after the 910B2 vector accuracy fix" \
+  --omc artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804/SobelCustom_kirin9030.omc \
+  --input artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804/x.bin \
+  --golden artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804/y.bin \
   --target-soc kirin9030 \
   --compare 1 \
   --force
@@ -142,6 +149,27 @@ artifacts/releases/kirin9030-sobel-custom-2026-08-04.zip
 zip sha256: 894c0ace26802bb08720c645dc0b92e09545ac81ab97bc3b223a2d38857b9167
 ```
 
+Latest vector-fix build after 910B2 accuracy validation:
+
+```text
+remote: /data1/z84378291/artifacts/kirin9030_sobel_vector_fix_20260804_01
+local:  artifacts/remote-pulled/kirin9030-sobel-vector-fix-20260804
+build_status=0
+atc_status=0
+SobelCustom_kirin9030.omc 31886 bytes
+omc sha256: 7f93d3c17806d04d0893583beff65274acb2ce318e3da6d64ddd80c5f29461c6
+x.bin sha256: 9f2f4d02d225403d3f480b9e88bb7b2b362f1f8a1751c6e34041d38b0935f03b
+y.bin sha256: 4f2655e865146d12cfc0513fca54040746c830f23120905079bdec24d3d0e8b1
+```
+
+Latest vector-fix release:
+
+```text
+https://github.com/RockmanZheng/kirin-ops/releases/tag/kirin9030-sobel-custom-vector-fix-2026-08-04
+artifacts/releases/kirin9030-sobel-custom-vector-fix-2026-08-04.zip
+zip sha256: 0094517a8e25f65578b68cc2f4bc9562c35dcf2624100f92a3b24197c1a47058
+```
+
 Offline checks:
 
 ```text
@@ -165,7 +193,7 @@ When a device is attached:
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --target "$SN" \
-  --bundle-dir "$PWD/artifacts/naked-omc/kirin9030-sobel-custom-2026-08-04" \
+  --bundle-dir "$PWD/artifacts/naked-omc/kirin9030-sobel-custom-vector-fix-2026-08-04" \
   --device-dir "/data/local/tmp/z84378291" \
   --model-run-tool "/data/local/tmp/z84378291/model_run_tool" \
   --no-clear-logs
