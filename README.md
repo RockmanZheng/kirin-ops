@@ -27,6 +27,7 @@ The public standard `aarch64` CANN toolkit installs, but it does not compile the
 
 See `docs/checkpoints/2026-08-03-kirin-mobile-spike-env-checkpoint.md` for the current state and evidence.
 See `docs/kirin9030-sobel-mobile-station-build-plan.md` for the Kirin9030 Sobel build plan, compatibility patch, and evidence.
+See `docs/sobel-910b2-validation-toolchain.md` for the 910B2 implementation-level Sobel validation chain.
 
 For the naked `.omc` `model_run_tool` path, see `docs/kirin-naked-omc-test-playbook.md`.
 
@@ -36,6 +37,15 @@ Build a Kirin9030 SobelCustom OMC from the mobile-station host:
 scripts/build-kirin9030-sobel-mobile-station.sh \
   --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
   --pull-to-dir artifacts/remote-pulled/kirin9030-sobel-2026-08-04
+```
+
+Validate the SobelCustom implementation on Ascend 910B2:
+
+```bash
+scripts/build-sobel-910b2-verify.sh \
+  --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
+  --pull-to-dir artifacts/remote-pulled/sobel910b2-toolchain-smoke-20260804 \
+  --device-id 1
 ```
 
 Scripted naked OMC `model_run_tool` wrapper:
