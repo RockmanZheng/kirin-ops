@@ -311,7 +311,7 @@ scripts/compare-sobel-output.py \
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --bundle-dir "$PWD/kirin9030-sobel-custom-vector-fix-2026-08-04" \
-  --compare-mode tensor
+  --compare-script scripts/compare-sobel-output.py
 ```
 
 ## 多输入算子
@@ -380,8 +380,7 @@ GOLDEN       可选；存在时做 compare
 OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
 TARGET_SOC   目标芯片断言，例如 kirin9030
 COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
-COMPARE_MODE auto、byte、tensor；默认 auto。tensor 表示使用 Python/numpy 输出契约验证
-COMPARE_VALIDATOR auto、sobel；默认 auto。当前 tensor validator 支持 Sobel 输出契约
+COMPARE_SCRIPT 可选；Python 精度验证脚本。Sobel bundle 默认用 scripts/compare-sobel-output.py
 ```
 
 打包命令：
@@ -506,7 +505,7 @@ scripts/test-naked-omc-vetest.sh
 12. 执行 model_run_tool。
 13. 如果模型加载失败，继续收集运行后文件状态、hilog 和 summary，然后再退出。
 14. 拉回 /data/local/tmp/output_0。
-15. 如果 y.bin 存在，用 cmp 做 byte-for-byte compare。
+15. 如果 y.bin 存在，用 Python 精度验证脚本比较拉回的输出。
 16. 写 evidence summary。
 17. 自动写可复制粘贴的 `evidence-report.txt`。
 18. 自动写 evidence-files.txt，打包 `<evidence-dir>.tgz`，并生成 `<evidence-dir>.tgz.sha256`。

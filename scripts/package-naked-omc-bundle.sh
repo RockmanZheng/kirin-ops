@@ -13,8 +13,7 @@ GOLDEN=""
 OUTPUT_NAME="output_0"
 TARGET_SOC=""
 COMPARE=""
-COMPARE_MODE=""
-COMPARE_VALIDATOR=""
+COMPARE_SCRIPT=""
 OUT_DIR="${ROOT}/artifacts/naked-omc"
 RELEASE_DIR="${ROOT}/artifacts/releases"
 FORCE=0
@@ -45,10 +44,8 @@ Options:
   --target-soc SOC     Expected target SoC, e.g. kirin9030.
   --compare 0|1        Whether the runner should compare output with golden.
                        Default: 1 when --golden is present, otherwise 0.
-  --compare-mode MODE  Optional output comparison mode for bundle.env:
-                       auto, byte, or tensor.
-  --compare-validator NAME
-                       Optional tensor validator for bundle.env: auto or sobel.
+  --compare-script PATH
+                       Optional Python precision validator copied into the bundle.
   --out-dir DIR        Bundle root. Default: artifacts/naked-omc.
   --release-dir DIR    Zip output root. Default: artifacts/releases.
   --force              Replace an existing bundle directory/zip.
@@ -147,15 +144,13 @@ while [ "$#" -gt 0 ]; do
       COMPARE="$2"
       shift 2
       ;;
-    --compare-mode)
-      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or tensor"
-      COMPARE_MODE="$2"
+    --compare-script)
+      [ "$#" -ge 2 ] || die "--compare-script requires a Python script path"
+      COMPARE_SCRIPT="$2"
       shift 2
       ;;
-    --compare-validator)
-      [ "$#" -ge 2 ] || die "--compare-validator requires auto or sobel"
-      COMPARE_VALIDATOR="$2"
-      shift 2
+    --compare-mode|--compare-validator)
+      die "$1 is retired; use --compare-script for a Python precision validator"
       ;;
     --out-dir)
       [ "$#" -ge 2 ] || die "--out-dir requires a directory"
@@ -208,33 +203,7 @@ case "${COMPARE}" in
     ;;
 esac
 
-if [ -n "${COMPARE_MODE}" ]; then
-  case "$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')" in
-    auto|byte|tensor)
-      COMPARE_MODE="$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')"
-      ;;
-    sobel|soble)
-      COMPARE_MODE="tensor"
-      ;;
-    *)
-      die "--compare-mode must be auto, byte, or tensor"
-      ;;
-  esac
-fi
-
-if [ -n "${COMPARE_VALIDATOR}" ]; then
-  case "$(printf '%s' "${COMPARE_VALIDATOR}" | tr '[:upper:]' '[:lower:]')" in
-    auto|sobel)
-      COMPARE_VALIDATOR="$(printf '%s' "${COMPARE_VALIDATOR}" | tr '[:upper:]' '[:lower:]')"
-      ;;
-    soble)
-      COMPARE_VALIDATOR="sobel"
-      ;;
-    *)
-      die "--compare-validator must be auto or sobel"
-      ;;
-  esac
-fi
+[ -z "${COMPARE_SCRIPT}" ] || [ -f "${COMPARE_SCRIPT}" ] || die "compare script not found: ${COMPARE_SCRIPT}"
 
 mkdir -p "${OUT_DIR}" "${RELEASE_DIR}"
 OUT_DIR="$(cd "${OUT_DIR}" && pwd -P)"
@@ -272,6 +241,11 @@ if [ -n "${GOLDEN}" ]; then
   GOLDEN_BASE="$(copy_file_once "${GOLDEN}" "${BUNDLE_DIR}")"
 fi
 
+COMPARE_SCRIPT_BASE=""
+if [ -n "${COMPARE_SCRIPT}" ]; then
+  COMPARE_SCRIPT_BASE="$(copy_file_once "${COMPARE_SCRIPT}" "${BUNDLE_DIR}")"
+fi
+
 {
   printf 'NAME="%s"\n' "$(manifest_value "${NAME}")"
   printf 'DESCRIPTION="%s"\n' "$(manifest_value "${DESCRIPTION}")"
@@ -285,11 +259,8 @@ fi
     printf 'TARGET_SOC="%s"\n' "$(manifest_value "${TARGET_SOC}")"
   fi
   printf 'COMPARE="%s"\n' "${COMPARE}"
-  if [ -n "${COMPARE_MODE}" ]; then
-    printf 'COMPARE_MODE="%s"\n' "$(manifest_value "${COMPARE_MODE}")"
-  fi
-  if [ -n "${COMPARE_VALIDATOR}" ]; then
-    printf 'COMPARE_VALIDATOR="%s"\n' "$(manifest_value "${COMPARE_VALIDATOR}")"
+  if [ -n "${COMPARE_SCRIPT_BASE}" ]; then
+    printf 'COMPARE_SCRIPT="%s"\n' "$(manifest_value "${COMPARE_SCRIPT_BASE}")"
   fi
 } > "${BUNDLE_DIR}/bundle.env"
 
@@ -319,6 +290,9 @@ fi
   done
   if [ -n "${GOLDEN_BASE}" ]; then
     sha256_file "${GOLDEN_BASE}" >> SHA256SUMS
+  fi
+  if [ -n "${COMPARE_SCRIPT_BASE}" ]; then
+    sha256_file "${COMPARE_SCRIPT_BASE}" >> SHA256SUMS
   fi
 )
 
