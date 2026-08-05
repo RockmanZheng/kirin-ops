@@ -264,6 +264,16 @@ hdc -t "$SN" file recv /data/local/tmp/output_0 ./output_sobel.bin
 cmp output_sobel.bin kirin-sobel-naked-omc-2026-08-03/y.bin
 ```
 
+Kirin9030 SobelCustom 的输出契约是 `uint8`，shape `[1, 1, 761, 1022]`，有效 tensor 长度应为 `777742` bytes。若 `model_run_tool` 拉回的 `output_0` 比这个长度更大，不要直接用整文件 `cmp` 判断精度；先用 Sobel 专用验证脚本确认有效前缀、尾部 dump 和数值误差。脚本依赖目标机已有的 `numpy`：
+
+```bash
+scripts/compare-sobel-output.py \
+  --output /root/z84378291/kirin-ops/artifacts/naked-omc-runs/20260804_180131/output_0 \
+  --golden /root/z84378291/kirin9030-sobel-custom-2026-08-04/y.bin
+```
+
+如果脚本报告 `best_candidate=raw_uint8_prefix`、`dump_size_status=TRAILING_BYTES_PRESENT`、且 `decision=PASS_ACCURACY_THRESHOLD`，说明 Sobel 的有效 tensor 精度通过；剩余问题是 runner/tool 的输出 dump 多带了尾部字节。
+
 ## 多输入算子
 
 issue #1 的 history 里出现过多输入写法：
@@ -551,7 +561,7 @@ output_0 与 y.bin 完全一致
 summary.txt 里 result=PASS_CANDIDATE
 ```
 
-如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，用 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 ## 常见问题
 

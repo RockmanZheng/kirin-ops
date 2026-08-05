@@ -146,6 +146,46 @@ Confirmed so far:
   - `op_host/sobel_custom.cpp` registers `AddConfig("kirinx90", ...)`.
 - A Kirin9030 attempt must update both fields together.
 
+### 2026-08-04 Issue #4 Real-Device Accuracy Triage
+
+- Real Kirin9030 device spike reached model execution and pulled `output_0`.
+- The run failed the current strict accuracy check because `output_0` was larger than the packaged golden:
+
+```text
+output_0: 3110968 bytes
+y.bin:     777742 bytes
+ratio:     4x
+```
+
+- Latest issue comment included `xxd -g1` and `xxd -g4` for the first 128 bytes of `output_0`.
+- Comparing those bytes against local bundle golden `artifacts/naked-omc/kirin9030-sobel-custom-2026-08-04/y.bin` showed the device output is already aligned with the `uint8` golden byte stream, not a clean `uint32` or `float32` representation.
+- First-128-byte sample had 6 differences, all `abs(delta) == 1`, so the current likely failure mode is:
+  - full-file `cmp` fails because `model_run_tool` or the runtime dump includes extra trailing bytes;
+  - prefix compare may still need a bounded uint8 tolerance because NPU and CPU/OpenCV Sobel rounding are not byte-exact.
+- Updated issue #4 marker comment:
+
+```text
+https://github.com/RockmanZheng/kirin-ops/issues/4#issuecomment-5186559434
+```
+
+- Next evidence requested on the machine that has the pulled output:
+  - compare only the first `wc -c y.bin` bytes of `output_0`;
+  - report `max_abs_diff`, `mean_abs_diff`, `nonzero_diff_count`, `nonzero_diff_rate`;
+  - dump the first 128 trailing bytes after the valid prefix.
+- Added a standalone verifier instead of changing the generic runner semantics:
+
+```bash
+scripts/compare-sobel-output.py \
+  --output /root/z84378291/kirin-ops/artifacts/naked-omc-runs/20260804_180131/output_0 \
+  --golden /root/z84378291/kirin9030-sobel-custom-2026-08-04/y.bin
+```
+
+- Local verifier smoke passed:
+  - script syntax check with `python3 -m py_compile`;
+  - exact `y.bin` vs `y.bin` under a temporary local numpy path reports `raw_uint8_full` and `decision=PASS_ACCURACY_THRESHOLD`;
+  - synthetic 4x dump under a temporary local numpy path reports `best_candidate=raw_uint8_prefix`, `dump_size_status=TRAILING_BYTES_PRESENT`, and rejects stride-4/uint32/float32 candidates.
+- `npu-group-3` probe confirms Python can import numpy 2.0.2; the real device-side machine is also reported to have numpy available.
+
 ## npu-group-3 Evidence
 
 Existing isolated containers:
