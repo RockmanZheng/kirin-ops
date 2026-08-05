@@ -109,6 +109,9 @@ Add `scripts/collect-profiling-evidence.sh` so the prod host can collect one
 copy/paste diagnostics report from the latest `artifacts/profiling/profile_*`
 run, or from a selected `--run-id` / `--run-dir`.
 
+The default report is compact and focuses on the lines needed to debug the
+profiling failure. Use `--full` only when the compact report is insufficient.
+
 The helper reports:
 
 - host-side `summary.txt`, `manifest.env`, `host-manifest.env`, `target-script.log`, `pull.log`, and `compare.log`;
@@ -122,4 +125,10 @@ Prod command:
 cd /root/z84378291/kirin-ops
 git pull --ff-only
 scripts/collect-profiling-evidence.sh
+```
+
+Full fallback:
+
+```bash
+scripts/collect-profiling-evidence.sh --full
 ```

@@ -8,22 +8,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR=""
 RUN_ID=""
 OUTPUT=""
-MAX_FILE_LINES=420
-MAX_LIST_LINES=420
+REPORT_MODE="brief"
+MAX_FILE_LINES=80
+MAX_LIST_LINES=80
 
 usage() {
   cat <<'USAGE'
 usage: scripts/collect-profiling-evidence.sh [options]
 
 Collects a copy/paste profiling diagnostics report from artifacts/profiling/.
-By default it selects the newest artifacts/profiling/profile_* directory.
+By default it selects the newest artifacts/profiling/profile_* directory and
+prints a compact report.
 
 Options:
   --run-dir DIR       Specific profiling evidence directory.
   --run-id ID         Run id under artifacts/profiling/, e.g. profile_20260805_161905.
   --output PATH       Also write the report to PATH.
-  --max-file-lines N  Max lines per text file section. Default: 420.
-  --max-list-lines N  Max lines for file/archive listing sections. Default: 420.
+  --brief             Compact report with key profiling/accuracy evidence. Default.
+  --full              Full report with every known host/target/archive section.
+  --max-file-lines N  Max lines per text file section. Default: 80.
+  --max-list-lines N  Max lines for file/archive listing sections. Default: 80.
   -h, --help          Show this help.
 
 Example:
@@ -85,6 +89,21 @@ emit_file_section() {
   fi
 }
 
+emit_file_grep_section() {
+  local title="$1"
+  local path="$2"
+  local pattern="$3"
+  local max_lines="${4:-${MAX_FILE_LINES}}"
+
+  section "${title}"
+  if [ ! -f "${path}" ]; then
+    printf 'missing: %s\n' "${path}"
+    return 0
+  fi
+
+  grep -Ei "${pattern}" "${path}" 2>/dev/null | sed -n "1,${max_lines}p" || printf 'no matching lines\n'
+}
+
 find_archive() {
   local -a archives=()
 
@@ -133,28 +152,56 @@ find_archive_member_by_basename() {
   '
 }
 
-emit_target_file_section() {
-  local title="$1"
-  local basename="$2"
-  local archive="$3"
+emit_target_file_content() {
+  local basename="$1"
+  local archive="$2"
   local direct_path="${RUN_DIR}/target-run/${basename}"
   local member=""
 
-  section "${title}"
   if [ -f "${direct_path}" ]; then
-    sed -n "1,${MAX_FILE_LINES}p" "${direct_path}" || true
+    cat "${direct_path}"
     return 0
   fi
 
   if [ -n "${archive}" ]; then
     member="$(find_archive_member_by_basename "${archive}" "${basename}")"
     if [ -n "${member}" ]; then
-      { archive_extract "${archive}" "${member}" 2>/dev/null || true; } | sed -n "1,${MAX_FILE_LINES}p"
+      archive_extract "${archive}" "${member}" 2>/dev/null
       return 0
     fi
   fi
 
-  printf 'missing: target-run/%s\n' "${basename}"
+  return 1
+}
+
+emit_target_file_section() {
+  local title="$1"
+  local basename="$2"
+  local archive="$3"
+
+  section "${title}"
+  if ! emit_target_file_content "${basename}" "${archive}" >/dev/null 2>&1; then
+    printf 'missing: target-run/%s\n' "${basename}"
+    return 0
+  fi
+
+  { emit_target_file_content "${basename}" "${archive}" 2>/dev/null || true; } | sed -n "1,${MAX_FILE_LINES}p"
+}
+
+emit_target_grep_section() {
+  local title="$1"
+  local basename="$2"
+  local archive="$3"
+  local pattern="$4"
+  local max_lines="${5:-${MAX_FILE_LINES}}"
+
+  section "${title}"
+  if ! emit_target_file_content "${basename}" "${archive}" >/dev/null 2>&1; then
+    printf 'missing: target-run/%s\n' "${basename}"
+    return 0
+  fi
+
+  { emit_target_file_content "${basename}" "${archive}" 2>/dev/null || true; } | grep -Ei "${pattern}" | sed -n "1,${max_lines}p" || printf 'no matching lines\n'
 }
 
 emit_key_fields() {
@@ -169,10 +216,11 @@ emit_find_section() {
   local title="$1"
   local path="$2"
   local maxdepth="$3"
+  local max_lines="${4:-${MAX_LIST_LINES}}"
 
   section "${title}"
   if [ -d "${path}" ]; then
-    find "${path}" -maxdepth "${maxdepth}" -type f 2>/dev/null | sort | sed -n "1,${MAX_LIST_LINES}p"
+    find "${path}" -maxdepth "${maxdepth}" -type f 2>/dev/null | sort | sed -n "1,${max_lines}p"
   else
     printf 'missing: %s\n' "${path}"
   fi
@@ -180,6 +228,7 @@ emit_find_section() {
 
 emit_archive_listing() {
   local archive="$1"
+  local max_lines="${2:-${MAX_LIST_LINES}}"
 
   section "archive listing"
   if [ -z "${archive}" ]; then
@@ -188,10 +237,25 @@ emit_archive_listing() {
   fi
 
   printf '%s\n' "--- ${archive}"
-  { archive_list "${archive}" 2>/dev/null || true; } | sed -n "1,${MAX_LIST_LINES}p"
+  { archive_list "${archive}" 2>/dev/null || true; } | sed -n "1,${max_lines}p"
 }
 
-emit_report() {
+emit_archive_grep_listing() {
+  local archive="$1"
+  local pattern="$2"
+  local max_lines="${3:-${MAX_LIST_LINES}}"
+
+  section "archive profiling listing"
+  if [ -z "${archive}" ]; then
+    printf 'missing: no .tgz/.tar in %s\n' "${RUN_DIR}"
+    return 0
+  fi
+
+  printf '%s\n' "--- ${archive}"
+  { archive_list "${archive}" 2>/dev/null || true; } | grep -Ei "${pattern}" | sed -n "1,${max_lines}p" || printf 'no matching lines\n'
+}
+
+emit_report_header() {
   local archive="$1"
 
   printf '# Kirin profiling evidence report\n'
@@ -199,6 +263,33 @@ emit_report() {
   printf 'repo_root=%s\n' "${ROOT}"
   printf 'run_dir=%s\n' "${RUN_DIR}"
   printf 'archive=%s\n' "${archive:-<none>}"
+  printf 'mode=%s\n' "${REPORT_MODE}"
+}
+
+emit_brief_report() {
+  local archive="$1"
+
+  emit_report_header "${archive}"
+
+  emit_key_fields
+  emit_file_section "summary.txt" "${RUN_DIR}/summary.txt"
+  emit_file_grep_section "manifest profiling fields" "${RUN_DIR}/manifest.env" '^(RUN_STATUS|DATA_PROC_STATUS|DATA_PROC_RESULT_PATH|PROFILE_MODE|PROFILING_ARG|ADD_TIMES|PROFILE_CANDIDATES_FILE|ARCHIVE_PATH|OUTPUT_PATH)='
+  emit_file_grep_section "target-script status/warnings" "${RUN_DIR}/target-script.log" 'WARN|ERROR|status|run directory|archive|profil|profile|data_proc|model_run_tool'
+  emit_file_grep_section "pull status" "${RUN_DIR}/pull.log" 'error|fail|manifest|archive|output|FileTransfer|Size:'
+  emit_file_grep_section "compare decision" "${RUN_DIR}/compare.log" 'compare_script=|decision=|best_candidate|max_abs|mean_abs|nonzero|dump_size|PASS|FAIL'
+  emit_target_file_section "target-run/command.txt" "command.txt" "${archive}"
+  emit_target_grep_section "target-run/model_run_tool-help profiling lines" "model_run_tool-help.txt" "${archive}" 'usage|option|help|profil|profile|trace|dump|time|times|model|input|output'
+  emit_target_grep_section "target-run/data_proc_tool-help profiling lines" "data_proc_tool-help.txt" "${archive}" 'usage|option|help|profil|profile|result|output|path|csv'
+  emit_target_file_section "target-run/profile-candidates.txt" "profile-candidates.txt" "${archive}"
+  emit_target_grep_section "target-run/files-after profiling lines" "files-after.txt" "${archive}" 'prof|profile|csv|output_0|\.json|\.csv|\.bin|\.txt'
+  emit_find_section "evidence files" "${RUN_DIR}" 3
+  emit_archive_grep_listing "${archive}" 'prof|profile|csv|json|bin|output|command|model_run|data_proc'
+}
+
+emit_full_report() {
+  local archive="$1"
+
+  emit_report_header "${archive}"
 
   emit_key_fields
   emit_file_section "summary.txt" "${RUN_DIR}/summary.txt"
@@ -220,6 +311,22 @@ emit_report() {
   emit_archive_listing "${archive}"
 }
 
+emit_report() {
+  local archive="$1"
+
+  case "${REPORT_MODE}" in
+    brief)
+      emit_brief_report "${archive}"
+      ;;
+    full)
+      emit_full_report "${archive}"
+      ;;
+    *)
+      die "unknown report mode: ${REPORT_MODE}"
+      ;;
+  esac
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --run-dir)
@@ -236,6 +343,14 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--output requires a path"
       OUTPUT="$2"
       shift 2
+      ;;
+    --brief)
+      REPORT_MODE="brief"
+      shift
+      ;;
+    --full)
+      REPORT_MODE="full"
+      shift
       ;;
     --max-file-lines)
       [ "$#" -ge 2 ] || die "--max-file-lines requires an integer"
