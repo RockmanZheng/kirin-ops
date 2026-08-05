@@ -78,7 +78,7 @@ Options:
                           arg: require --profiling-arg.
                           none: do not add profiling-specific flags.
   --profiling-arg ARG     Explicit model_run_tool profiling flag, for example
-                          --profiling or --profile.
+                          --enable_item=1, --profiling, or --profile.
   --extra-run-arg ARG     Extra single-word model_run_tool argument.
                           Can be passed multiple times.
   --profile-dir NAME      Expected raw profile data directory name.
@@ -250,7 +250,9 @@ detect_profile_arg() {
       ;;
   esac
 
-  if contains_text '\-\-profiling' "$help_file"; then
+  if contains_text '\-\-enable_item' "$help_file"; then
+    printf '%s\n' '--enable_item=1'
+  elif contains_text '\-\-profiling' "$help_file"; then
     printf '%s\n' '--profiling'
   elif contains_text '\-\-profile' "$help_file"; then
     printf '%s\n' '--profile'
@@ -315,18 +317,20 @@ write_target_info() {
 }
 
 find_profile_candidates() {
-  for path in \
-    "$RUN_DIR/$PROFILE_DIR_HINT" \
-    "$RUN_DIR/prof_data" \
-    "$RUN_DIR/profile" \
-    "$RUN_DIR/profiling" \
-    "$RUN_DIR/PROF" \
-    "$RUN_DIR"/PROF_* \
-    "$RUN_DIR"/prof*
-  do
-    [ -d "$path" ] || continue
-    printf '%s\n' "$path"
-  done
+  {
+    for path in \
+      "$RUN_DIR/$PROFILE_DIR_HINT" \
+      "$RUN_DIR/prof_data" \
+      "$RUN_DIR/profile" \
+      "$RUN_DIR/profiling" \
+      "$RUN_DIR/PROF" \
+      "$RUN_DIR"/PROF_* \
+      "$RUN_DIR"/prof*
+    do
+      [ -d "$path" ] || continue
+      printf '%s\n' "$path"
+    done
+  } | awk 'NF && !seen[$0]++'
 }
 
 archive_run_dir() {
@@ -600,6 +604,7 @@ fi
 
 {
   echo "run_dir=$RUN_DIR"
+  echo "cwd=$RUN_DIR"
   echo "model_run_tool=$MODEL_RUN_TOOL"
   echo "data_proc_tool=$DATA_PROC_TOOL"
   echo "omc=$OMC"
@@ -625,7 +630,10 @@ fi
 
 log "run directory: $RUN_DIR"
 log "running model_run_tool"
-"$@" > "$RUN_LOG" 2>&1
+(
+  cd "$RUN_DIR" || exit 1
+  "$@"
+) > "$RUN_LOG" 2>&1
 RUN_STATUS=$?
 
 {
