@@ -58,6 +58,12 @@ For Sobel bundles with `x.bin/y.bin`, the test and profiling wrappers use
 `scripts/compare-sobel-output.py` to validate the pulled tensor with
 Python/numpy after the real-device run.
 
+Collect a copy/paste diagnostics report for the latest profiling run:
+
+```bash
+scripts/collect-profiling-evidence.sh
+```
+
 Package a generic bundle once an `.omc` and its inputs are available:
 
 ```bash
