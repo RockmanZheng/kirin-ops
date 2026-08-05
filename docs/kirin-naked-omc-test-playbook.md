@@ -293,19 +293,26 @@ hdc -t "$SN" shell \
 
 hdc -t "$SN" shell "ls -lt /data/local/tmp/ | head -20"
 hdc -t "$SN" file recv /data/local/tmp/output_0 ./output_sobel.bin
-
-cmp output_sobel.bin kirin-sobel-naked-omc-2026-08-03/y.bin
 ```
 
-Kirin9030 SobelCustom 的输出契约是 `uint8`，shape `[1, 1, 761, 1022]`，有效 tensor 长度应为 `777742` bytes。若 `model_run_tool` 拉回的 `output_0` 比这个长度更大，不要直接用整文件 `cmp` 判断精度；先用 Sobel 专用验证脚本确认有效前缀、尾部 dump 和数值误差。脚本依赖目标机已有的 `numpy`：
+Kirin9030 SobelCustom 的输出契约是 `uint8`，shape `[1, 1, 761, 1022]`，有效 tensor 长度应为 `777742` bytes。若 `model_run_tool` 拉回的 `output_0` 比这个长度更大，不要直接用整文件 `cmp` 判断精度；用 Sobel 专用验证脚本确认有效前缀、尾部 dump 和数值误差。脚本依赖运行测试脚本的 prod host 有 `python3` 和 `numpy`：
 
 ```bash
 scripts/compare-sobel-output.py \
   --output /root/z84378291/kirin-ops/artifacts/naked-omc-runs/20260804_180131/output_0 \
-  --golden /root/z84378291/kirin9030-sobel-custom-2026-08-04/y.bin
+  --golden /root/z84378291/kirin9030-sobel-custom-2026-08-04/y.bin \
+  --input /root/z84378291/kirin9030-sobel-custom-2026-08-04/x.bin
 ```
 
 如果脚本报告 `best_candidate=raw_uint8_prefix`、`dump_size_status=TRAILING_BYTES_PRESENT`、且 `decision=PASS_ACCURACY_THRESHOLD`，说明 Sobel 的有效 tensor 精度通过；剩余问题是 runner/tool 的输出 dump 多带了尾部字节。
+
+`scripts/test-naked-omc-vetest.sh` 会在 `COMPARE=1` 且 bundle/OMC 名称包含 `sobel` 或 `soble` 时自动使用这个 Python/numpy 精度验证。也可以显式指定：
+
+```bash
+scripts/test-naked-omc-vetest.sh \
+  --bundle-dir "$PWD/kirin9030-sobel-custom-vector-fix-2026-08-04" \
+  --compare-mode sobel
+```
 
 ## 多输入算子
 
@@ -369,10 +376,11 @@ COMPARE="0"
 ```text
 OMC          bundle 内的 .omc 文件名
 INPUT        一个输入文件，或逗号分隔的多个输入文件
-GOLDEN       可选；存在时做 byte-for-byte compare
+GOLDEN       可选；存在时做 compare
 OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
 TARGET_SOC   目标芯片断言，例如 kirin9030
 COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
+COMPARE_MODE auto、byte、sobel；默认 auto。Sobel 模型用 Python/numpy 精度验证，其他模型做 byte compare
 ```
 
 打包命令：
@@ -594,7 +602,7 @@ output_0 与 y.bin 完全一致
 summary.txt 里 result=PASS_CANDIDATE
 ```
 
-如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，用 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 compare 通过，`PASS_CANDIDATE` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，主测试脚本会通过 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 ## 常见问题
 

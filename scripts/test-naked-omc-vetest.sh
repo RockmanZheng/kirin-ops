@@ -23,6 +23,7 @@ BUNDLE_GOLDEN=""
 BUNDLE_OUTPUT_NAME=""
 BUNDLE_TARGET_SOC=""
 BUNDLE_COMPARE=""
+BUNDLE_COMPARE_MODE=""
 OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
@@ -47,6 +48,7 @@ EXPORT_TEXT=1
 RAW_HILOG_MODE="${RAW_HILOG_MODE:-auto}"
 PULL_OUTPUT=1
 COMPARE=1
+COMPARE_MODE="${COMPARE_MODE:-auto}"
 STRICT=1
 DRY_RUN=0
 EVIDENCE_INITIALIZED=0
@@ -60,6 +62,7 @@ GOLDEN_EXPLICIT=0
 OUTPUT_NAME_EXPLICIT=0
 TARGET_SOC_EXPLICIT=0
 COMPARE_EXPLICIT=0
+COMPARE_MODE_EXPLICIT=0
 LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Model Process|status:1}"
 RUNNER_LAUNCH_ERROR_RE="${RUNNER_LAUNCH_ERROR_RE:-inaccessible or not found|no such file|not found|permission denied|exec format error|cannot execute binary file|cannot link executable|bad elf|invalid elf|library .*not found|linker .*not found}"
 FAILURE_HINT_RE="${FAILURE_HINT_RE:-Load model|loading model|Model Process|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Recompile failed|BuildModelByHcl failed|status:1}"
@@ -110,6 +113,9 @@ Options:
                          Default: include raw hilog only when filtered hilog is empty.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
+  --compare-mode MODE    Output comparison mode: auto, byte, or sobel.
+                         Default: auto. Sobel bundles use the Python/numpy
+                         tolerance-aware comparator; other bundles use cmp.
   --no-logs              Do not capture hilog.
   --no-strict            Do not exit nonzero when output/log validation is incomplete.
   --dry-run              Print resolved settings and exit.
@@ -194,6 +200,117 @@ print_matching_excerpt() {
 
   warn "${label} matching excerpt (${path}, first ${max_lines} matches):"
   printf '%s\n' "${matches}" | sed -n "1,${max_lines}p" | sed 's/^/[kirin-naked-omc]   /' >&2 || true
+}
+
+normalize_compare_mode() {
+  local mode="$1"
+
+  printf '%s\n' "${mode}" | tr '[:upper:]' '[:lower:]'
+}
+
+is_sobel_compare_candidate() {
+  local omc_base
+  local haystack
+
+  omc_base="$(basename "${OMC:-}")"
+  haystack="$(printf '%s %s %s\n' "${omc_base}" "${BUNDLE_NAME:-}" "${BUNDLE_DESCRIPTION:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${haystack}" == *sobel* || "${haystack}" == *soble* ]]
+}
+
+resolve_compare_mode() {
+  local requested
+
+  requested="$(normalize_compare_mode "${COMPARE_MODE}")"
+  case "${requested}" in
+    auto)
+      if is_sobel_compare_candidate; then
+        printf 'sobel\n'
+      else
+        printf 'byte\n'
+      fi
+      ;;
+    byte|sobel)
+      printf '%s\n' "${requested}"
+      ;;
+    *)
+      die "compare mode must be auto, byte, or sobel; got: ${COMPARE_MODE}"
+      ;;
+  esac
+}
+
+run_byte_compare() {
+  local status
+
+  set +e
+  cmp -s "${OUTPUT_LOCAL}" "${GOLDEN}"
+  status=$?
+  set -e
+
+  {
+    echo "compare_mode=byte"
+    echo "output=${OUTPUT_LOCAL}"
+    echo "golden=${GOLDEN}"
+    echo "status=${status}"
+    wc -c "${OUTPUT_LOCAL}" "${GOLDEN}" || true
+    sha256_file "${OUTPUT_LOCAL}" || true
+    sha256_file "${GOLDEN}" || true
+  } > "${COMPARE_LOG}"
+
+  return "${status}"
+}
+
+run_sobel_compare() {
+  local input_for_reference
+  local status
+  local -a compare_cmd
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    {
+      echo "compare_mode=sobel"
+      echo "status=127"
+      echo "reason=python3 not found on host running this script"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  if ! python3 -c 'import numpy' >/dev/null 2>&1; then
+    {
+      echo "compare_mode=sobel"
+      echo "status=127"
+      echo "reason=python3 numpy module not found on host running this script"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  if [ ! -f "${ROOT}/scripts/compare-sobel-output.py" ]; then
+    {
+      echo "compare_mode=sobel"
+      echo "status=127"
+      echo "reason=compare-sobel-output.py not found"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  input_for_reference="${INPUT_FILES[0]}"
+  compare_cmd=(
+    python3 "${ROOT}/scripts/compare-sobel-output.py"
+    --output "${OUTPUT_LOCAL}"
+    --golden "${GOLDEN}"
+    --input "${input_for_reference}"
+  )
+
+  set +e
+  {
+    echo "compare_mode=sobel"
+    printf 'compare_command='
+    printf '%q ' "${compare_cmd[@]}"
+    printf '\n\n'
+    "${compare_cmd[@]}"
+  } > "${COMPARE_LOG}" 2>&1
+  status=$?
+  set -e
+
+  return "${status}"
 }
 
 sha256_file() {
@@ -329,6 +446,9 @@ load_bundle_manifest() {
         ;;
       COMPARE)
         BUNDLE_COMPARE="${value}"
+        ;;
+      COMPARE_MODE|COMPARE_TOOL|OUTPUT_COMPARE_MODE)
+        BUNDLE_COMPARE_MODE="${value}"
         ;;
       *)
         warn "ignoring unknown bundle manifest key ${key} in ${manifest}"
@@ -512,6 +632,7 @@ write_failure_summary_if_missing() {
     echo "output_local=${OUTPUT_LOCAL:-}"
     echo "output_pulled=${OUTPUT_PULLED:-0}"
     echo "compare=${COMPARE:-}"
+    echo "compare_mode=${COMPARE_MODE:-}"
     echo "compare_result=${COMPARE_RESULT:-NOT_REACHED}"
     echo "run_failed=${RUN_FAILED:-1}"
     echo "run_failure_reason=${RUN_FAILURE_REASON:-${failure_message}}"
@@ -841,6 +962,12 @@ while [ "$#" -gt 0 ]; do
       COMPARE_EXPLICIT=1
       shift
       ;;
+    --compare-mode)
+      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or sobel"
+      COMPARE_MODE="$2"
+      COMPARE_MODE_EXPLICIT=1
+      shift 2
+      ;;
     --no-logs)
       CAPTURE_LOGS=0
       shift
@@ -918,6 +1045,10 @@ if [ -n "${BUNDLE_DIR}" ]; then
         ;;
     esac
   fi
+
+  if [ "${COMPARE_MODE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_MODE}" ]; then
+    COMPARE_MODE="${BUNDLE_COMPARE_MODE}"
+  fi
 elif [ -d "${DEFAULT_BUNDLE_DIR}" ]; then
   [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${DEFAULT_BUNDLE_DIR}/SobelCustom.omc"
   [ "${INPUT_EXPLICIT}" -eq 1 ] || INPUT="${DEFAULT_BUNDLE_DIR}/x.bin"
@@ -927,6 +1058,8 @@ elif [ -d "${DEFAULT_BUNDLE_DIR}" ]; then
 elif [ -z "${OMC}" ] && [ -f "${PREBUILT_OMC}" ]; then
   OMC="${PREBUILT_OMC}"
 fi
+
+COMPARE_MODE="$(resolve_compare_mode)"
 
 case "${LOG_SECONDS}" in
   ''|*[!0-9]*)
@@ -1017,6 +1150,7 @@ RAW_HILOG_MODE=${RAW_HILOG_MODE}
 RUNNER_LAUNCH_ERROR_RE=${RUNNER_LAUNCH_ERROR_RE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
+COMPARE_MODE=${COMPARE_MODE}
 STRICT=${STRICT}
 LOG_RE=${LOG_RE}
 EOF
@@ -1421,19 +1555,26 @@ fi
 
 COMPARE_RESULT="SKIPPED"
 if [ "${COMPARE}" -eq 1 ] && [ "${OUTPUT_PULLED}" -eq 1 ] && [ -n "${GOLDEN}" ] && [ -f "${GOLDEN}" ]; then
-  if cmp -s "${OUTPUT_LOCAL}" "${GOLDEN}"; then
+  if [ "${COMPARE_MODE}" = "sobel" ]; then
+    log "checking Sobel output with Python/numpy tolerance-aware comparator"
+    set +e
+    run_sobel_compare
+    COMPARE_STATUS=$?
+    set -e
+  else
+    log "checking output byte-for-byte against golden"
+    set +e
+    run_byte_compare
+    COMPARE_STATUS=$?
+    set -e
+  fi
+
+  if [ "${COMPARE_STATUS}" -eq 0 ]; then
     COMPARE_RESULT="PASS"
-    printf 'PASS: %s matches %s\n' "${OUTPUT_LOCAL}" "${GOLDEN}" > "${COMPARE_LOG}"
-    log "golden compare passed"
+    log "golden compare passed (${COMPARE_MODE})"
   else
     COMPARE_RESULT="FAIL"
-    {
-      printf 'FAIL: %s does not match %s\n' "${OUTPUT_LOCAL}" "${GOLDEN}"
-      wc -c "${OUTPUT_LOCAL}" "${GOLDEN}" || true
-      sha256_file "${OUTPUT_LOCAL}" || true
-      sha256_file "${GOLDEN}" || true
-    } > "${COMPARE_LOG}"
-    warn "golden compare failed; inspect ${COMPARE_LOG}"
+    warn "golden compare failed (${COMPARE_MODE}); inspect ${COMPARE_LOG}"
   fi
 fi
 
@@ -1470,6 +1611,7 @@ fi
   echo "output_local=${OUTPUT_LOCAL}"
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
+  echo "compare_mode=${COMPARE_MODE}"
   echo "compare_result=${COMPARE_RESULT}"
   echo "run_failed=${RUN_FAILED:-0}"
   echo "run_failure_reason=${RUN_FAILURE_REASON:-}"
@@ -1517,7 +1659,7 @@ if [ "${CAPTURE_LOGS}" -eq 1 ]; then
 fi
 
 if [ "${RESULT}" = "PASS_CANDIDATE" ]; then
-  log "PASS_CANDIDATE: output was pulled and matches the golden file."
+  log "PASS_CANDIDATE: output was pulled and passed golden comparison."
   exit 0
 fi
 
