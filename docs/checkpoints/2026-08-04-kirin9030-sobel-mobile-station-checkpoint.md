@@ -186,6 +186,69 @@ scripts/compare-sobel-output.py \
   - synthetic 4x dump under a temporary local numpy path reports `best_candidate=raw_uint8_prefix`, `dump_size_status=TRAILING_BYTES_PRESENT`, and rejects stride-4/uint32/float32 candidates.
 - `npu-group-3` probe confirms Python can import numpy 2.0.2; the real device-side machine is also reported to have numpy available.
 
+### 2026-08-04 Issue #4 Comparison Result And Clamp Rebuild
+
+- Latest Issue #4 verifier output confirmed:
+  - `best_candidate=raw_uint8_prefix`
+  - `dump_size_status=TRAILING_BYTES_PRESENT`
+  - trailing bytes after the valid prefix are all zero
+  - `decision=FAIL_ACCURACY_THRESHOLD`
+  - valid-prefix stats: `max_abs_diff=251`, `mean_abs_diff=0.435706185`, `nonzero_diff_rate=0.076176933`
+- Interpretation:
+  - output format is resolved as raw `uint8` prefix plus zero tail;
+  - the remaining failure is real effective-tensor accuracy, not 4-byte encoding;
+  - the first listed mismatches are all `+/-1`, but the `max_abs_diff=251` means there are additional large outliers outside the printed prefix.
+- Follow-up numpy source-model checks on `npu-group-3`:
+  - regenerating the packaged OpenCV golden from `x.bin` matches `y.bin` exactly: `max_abs_diff=0`, `nonzero_diff_count=0`;
+  - simulating a missing clamp with direct `ceil(...).astype(uint8)` does not match the Issue #4 pattern: `nonzero_diff_rate=0.508646826`, `mean_abs_diff=80.253229220`;
+  - simulating the Ascend C half-precision arithmetic path with clipping explains the expected small drift: `max_abs_diff=1`, `nonzero_diff_rate=0.072360757`, `mean_abs_diff=0.072360757`;
+  - therefore the simple "missing clamp causes modulo wrap" explanation is not sufficient for the attached device output. The current evidence points to normal half-precision drift plus a smaller set of large outliers that need coordinate/histogram diagnostics.
+- Source hardening candidate:
+  - `gen_data.py` clips `y2` to `[0, 255]` before `ceil(...).astype(np.uint8)`;
+  - the NPU kernel did `Abs + Add` and then directly `Cast(..., CAST_CEIL)` to `uint8`;
+  - an explicit `Mins(..., half(255), ...)` before the final cast keeps the kernel source aligned with the golden contract even if the current failure also needs more diagnosis.
+- Updated `scripts/build-kirin9030-sobel-mobile-station.sh` scratch patch to insert the defensive clamp:
+
+```cpp
+AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));
+```
+
+- Enhanced `scripts/compare-sobel-output.py`:
+  - `--input x.bin` computes a numpy NPU half-op Sobel reference without `cv2`;
+  - prints diff histograms and largest mismatch coordinates for the raw `uint8` prefix;
+  - compares device output to both packaged `y.bin` and the NPU half-op reference.
+
+- Rebuilt clamped Kirin9030 Sobel on `npu-group-3` in x86 mobile-station container:
+
+```text
+remote artifact: /data1/z84378291/artifacts/kirin9030_sobel_clamped_20260804_issue4
+build_status=0
+atc_status=0
+```
+
+- Pulled and packaged bundle:
+
+```text
+bundle: artifacts/naked-omc/kirin9030-sobel-custom-clamped-2026-08-04
+zip: artifacts/releases/kirin9030-sobel-custom-clamped-2026-08-04.zip
+zip sha256: 51811785260d7f6f70af0c77fba22f23895fb5c49a1cb4fe4a2d86729c487253
+omc sha256: 2b04cd151f8b2dd8b5ed8d367375b84eb912f6273c3337e22a375f67899ecbdc
+```
+
+- Local checks passed:
+  - `python3 -m py_compile scripts/compare-sobel-output.py`
+  - `bash -n scripts/build-kirin9030-sobel-mobile-station.sh scripts/package-naked-omc-bundle.sh`
+  - `shellcheck scripts/build-kirin9030-sobel-mobile-station.sh scripts/package-naked-omc-bundle.sh`
+  - `git diff --check -- scripts/build-kirin9030-sobel-mobile-station.sh scripts/compare-sobel-output.py docs/checkpoints/2026-08-04-kirin9030-sobel-mobile-station-checkpoint.md`
+  - bundle `SHA256SUMS`
+  - clamped bundle runner `--dry-run`
+- Remote verifier smoke passed on `npu-group-3` by streaming the current script over SSH:
+  - command included `--input /data1/z84378291/artifacts/kirin9030_sobel_clamped_20260804_issue4/model_conversion/x.bin`;
+  - `reference.npu_half_clipped.available=true`;
+  - `candidate.npu_half_clipped_vs_golden.max_abs_diff=1`;
+  - `candidate.npu_half_clipped_vs_golden.nonzero_diff_count=56278`;
+  - `decision=PASS_ACCURACY_THRESHOLD` for `y.bin` self-check.
+
 ## npu-group-3 Evidence
 
 Existing isolated containers:
