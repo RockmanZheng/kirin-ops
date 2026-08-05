@@ -58,12 +58,65 @@ def offset_index(index: int, shape: tuple[int, ...]) -> str:
     return ""
 
 
+def print_spatial_mismatch_summary(prefix: str, abs_diff: np.ndarray, shape: tuple[int, ...], top_limit: int) -> None:
+    if top_limit <= 0 or len(shape) < 2 or abs_diff.size != math.prod(shape):
+        return
+
+    height = shape[-2]
+    width = shape[-1]
+    spatial = abs_diff.reshape((-1, height, width))
+    row_counts = np.count_nonzero(spatial, axis=(0, 2))
+    col_counts = np.count_nonzero(spatial, axis=(0, 1))
+    if not row_counts.any() and not col_counts.any():
+        return
+
+    top_count = min(top_limit, 12)
+    row_order = np.argsort(-row_counts, kind="stable")[:top_count]
+    col_order = np.argsort(-col_counts, kind="stable")[:top_count]
+    row_parts = [f"{int(index)}:{int(row_counts[index])}" for index in row_order if row_counts[index]]
+    col_parts = [f"{int(index)}:{int(col_counts[index])}" for index in col_order if col_counts[index]]
+    if row_parts:
+        print(f"{prefix}.top_mismatch_rows=" + ",".join(row_parts))
+    if col_parts:
+        print(f"{prefix}.top_mismatch_cols=" + ",".join(col_parts))
+
+
+def print_tile_mismatch_summary(
+    prefix: str,
+    abs_diff: np.ndarray,
+    shape: tuple[int, ...],
+    tile_output_height: int,
+    tile_output_width: int,
+) -> None:
+    if len(shape) < 2 or abs_diff.size != math.prod(shape):
+        return
+
+    height = shape[-2]
+    width = shape[-1]
+    spatial = abs_diff.reshape((-1, height, width))
+    mismatch = spatial != 0
+    if tile_output_height > 1:
+        row_mod_parts = [
+            f"{mod}:{int(np.count_nonzero(mismatch[:, mod::tile_output_height, :]))}"
+            for mod in range(tile_output_height)
+        ]
+        print(f"{prefix}.tile_row_mod_{tile_output_height}_mismatch_counts=" + ",".join(row_mod_parts))
+    if tile_output_width > 1:
+        col_block_parts = []
+        for block_index, start in enumerate(range(0, width, tile_output_width)):
+            end = min(start + tile_output_width, width)
+            col_block_parts.append(f"{block_index}[{start}:{end}]={int(np.count_nonzero(mismatch[:, :, start:end]))}")
+        print(f"{prefix}.tile_col_block_{tile_output_width}_mismatch_counts=" + ",".join(col_block_parts))
+
+
 def print_diff_diagnostics(
     prefix: str,
     output: np.ndarray,
     expected: np.ndarray,
     shape: tuple[int, ...],
     top_limit: int,
+    tile_output_height: int,
+    tile_output_width: int,
 ) -> None:
     diff = output.astype(np.int16) - expected.astype(np.int16)
     abs_diff = np.abs(diff)
@@ -74,6 +127,8 @@ def print_diff_diagnostics(
     print(f"{prefix}.abs_diff_histogram.16_63={int(np.count_nonzero((16 <= abs_diff) & (abs_diff <= 63)))}")
     print(f"{prefix}.abs_diff_histogram.64_127={int(np.count_nonzero((64 <= abs_diff) & (abs_diff <= 127)))}")
     print(f"{prefix}.abs_diff_histogram.128_255={int(np.count_nonzero(abs_diff >= 128))}")
+    print_spatial_mismatch_summary(prefix, abs_diff, shape, top_limit)
+    print_tile_mismatch_summary(prefix, abs_diff, shape, tile_output_height, tile_output_width)
 
     if top_limit <= 0:
         return
@@ -214,6 +269,8 @@ def main() -> int:
     parser.add_argument("--max-diff-rate", type=float, default=None, help="Optional allowed mismatch rate, e.g. 0.01.")
     parser.add_argument("--sample-limit", type=int, default=40, help="Mismatch samples per candidate. Default: 40.")
     parser.add_argument("--top-mismatches", type=int, default=20, help="Largest mismatch samples for diagnostics. Default: 20.")
+    parser.add_argument("--tile-output-height", type=int, default=7, help="Sobel tile output height for diagnostics. Default: 7.")
+    parser.add_argument("--tile-output-width", type=int, default=254, help="Sobel tile output width for diagnostics. Default: 254.")
     args = parser.parse_args()
 
     if args.max_abs_diff < 0:
@@ -224,6 +281,10 @@ def main() -> int:
         parser.error("--sample-limit must be non-negative")
     if args.top_mismatches < 0:
         parser.error("--top-mismatches must be non-negative")
+    if args.tile_output_height < 0:
+        parser.error("--tile-output-height must be non-negative")
+    if args.tile_output_width < 0:
+        parser.error("--tile-output-width must be non-negative")
 
     expected_bytes = math.prod(args.shape)
     output = np.fromfile(args.output, dtype=np.uint8)
@@ -357,7 +418,15 @@ def main() -> int:
 
     if best["name"] in {"raw_uint8_prefix", "raw_uint8_full"}:
         best_output = output[:expected_bytes] if best["name"] == "raw_uint8_prefix" else output
-        print_diff_diagnostics(f"diagnostic.{best['name']}_vs_golden", best_output, golden, args.shape, args.top_mismatches)
+        print_diff_diagnostics(
+            f"diagnostic.{best['name']}_vs_golden",
+            best_output,
+            golden,
+            args.shape,
+            args.top_mismatches,
+            args.tile_output_height,
+            args.tile_output_width,
+        )
 
     if args.input:
         print()
@@ -379,7 +448,15 @@ def main() -> int:
                 args.sample_limit,
             )
             print_candidate(reference_vs_golden, args.max_abs_diff, args.max_diff_rate)
-            print_diff_diagnostics("diagnostic.npu_half_clipped_vs_golden", npu_reference, golden, args.shape, args.top_mismatches)
+            print_diff_diagnostics(
+                "diagnostic.npu_half_clipped_vs_golden",
+                npu_reference,
+                golden,
+                args.shape,
+                args.top_mismatches,
+                args.tile_output_height,
+                args.tile_output_width,
+            )
 
             if output.size >= expected_bytes:
                 output_prefix_vs_reference = candidate_stats(
@@ -396,6 +473,8 @@ def main() -> int:
                     npu_reference,
                     args.shape,
                     args.top_mismatches,
+                    args.tile_output_height,
+                    args.tile_output_width,
                 )
 
     if passes:
