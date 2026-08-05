@@ -16,6 +16,7 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_SHAPE = (1, 1, 761, 1022)
+DEFAULT_INPUT_SHAPE = (1, 763, 1024, 3)
 
 
 def parse_shape(value: str) -> tuple[int, ...]:
@@ -49,6 +50,91 @@ def first_mismatches(diff: np.ndarray, output: np.ndarray, golden: np.ndarray, l
         f"golden=0x{int(golden[index]):02x} delta={int(diff[index]):+d}"
         for index in indexes
     ]
+
+
+def offset_index(index: int, shape: tuple[int, ...]) -> str:
+    if math.prod(shape) != 0:
+        return ",".join(str(part) for part in np.unravel_index(index, shape))
+    return ""
+
+
+def print_diff_diagnostics(
+    prefix: str,
+    output: np.ndarray,
+    expected: np.ndarray,
+    shape: tuple[int, ...],
+    top_limit: int,
+) -> None:
+    diff = output.astype(np.int16) - expected.astype(np.int16)
+    abs_diff = np.abs(diff)
+    print(f"{prefix}.abs_diff_histogram.0={int(np.count_nonzero(abs_diff == 0))}")
+    print(f"{prefix}.abs_diff_histogram.1={int(np.count_nonzero(abs_diff == 1))}")
+    print(f"{prefix}.abs_diff_histogram.2_5={int(np.count_nonzero((2 <= abs_diff) & (abs_diff <= 5)))}")
+    print(f"{prefix}.abs_diff_histogram.6_15={int(np.count_nonzero((6 <= abs_diff) & (abs_diff <= 15)))}")
+    print(f"{prefix}.abs_diff_histogram.16_63={int(np.count_nonzero((16 <= abs_diff) & (abs_diff <= 63)))}")
+    print(f"{prefix}.abs_diff_histogram.64_127={int(np.count_nonzero((64 <= abs_diff) & (abs_diff <= 127)))}")
+    print(f"{prefix}.abs_diff_histogram.128_255={int(np.count_nonzero(abs_diff >= 128))}")
+
+    if top_limit <= 0:
+        return
+    mismatch_indexes = np.flatnonzero(abs_diff)
+    if not mismatch_indexes.size:
+        return
+    order = np.argsort(-abs_diff[mismatch_indexes], kind="stable")[:top_limit]
+    print(f"{prefix}.largest_mismatches=")
+    for index in mismatch_indexes[order]:
+        index_int = int(index)
+        coord = offset_index(index_int, shape)
+        coord_part = f" index={coord}" if coord else ""
+        print(
+            f"  offset=0x{index_int:x}{coord_part} output=0x{int(output[index_int]):02x} "
+            f"expected=0x{int(expected[index_int]):02x} delta={int(diff[index_int]):+d}"
+        )
+
+
+def half_add(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    return (left.astype(np.float16) + right.astype(np.float16)).astype(np.float16)
+
+
+def half_mul(values: np.ndarray, scalar: float) -> np.ndarray:
+    return (values.astype(np.float16) * np.float16(scalar)).astype(np.float16)
+
+
+def npu_half_sobel_reference(input_path: Path, input_shape: tuple[int, ...], output_shape: tuple[int, ...]) -> np.ndarray:
+    if len(input_shape) != 4 or input_shape[0] != 1 or input_shape[3] != 3:
+        raise ValueError("input reference currently expects NHWC shape 1,H,W,3")
+    expected_input_bytes = math.prod(input_shape)
+    input_values = np.fromfile(input_path, dtype=np.uint8)
+    if input_values.size != expected_input_bytes:
+        raise ValueError(f"input size {input_values.size} does not match input shape bytes {expected_input_bytes}")
+
+    input_nhwc = input_values.reshape(input_shape)
+    input_nchw = np.transpose(input_nhwc, (0, 3, 1, 2)).astype(np.float16)
+
+    red = half_mul(input_nchw[:, 0, :, :], 0.299)
+    green = half_mul(input_nchw[:, 1, :, :], 0.587)
+    blue = half_mul(input_nchw[:, 2, :, :], 0.114)
+    gray = half_add(half_add(red, green), blue).reshape(input_shape[1], input_shape[2])
+
+    dx = half_mul(gray[:-2, :-2], -1)
+    dx = half_add(dx, half_mul(gray[1:-1, :-2], -2))
+    dx = half_add(dx, half_mul(gray[2:, :-2], -1))
+    dx = half_add(dx, gray[:-2, 2:])
+    dx = half_add(dx, half_mul(gray[1:-1, 2:], 2))
+    dx = half_add(dx, gray[2:, 2:])
+
+    dy = half_mul(gray[:-2, :-2], -1)
+    dy = half_add(dy, half_mul(gray[2:, :-2], 1))
+    dy = half_add(dy, half_mul(gray[:-2, 1:-1], -2))
+    dy = half_add(dy, half_mul(gray[2:, 1:-1], 2))
+    dy = half_add(dy, half_mul(gray[:-2, 2:], -1))
+    dy = half_add(dy, gray[2:, 2:])
+
+    sobel = half_add(np.abs(dx).astype(np.float16), np.abs(dy).astype(np.float16))
+    reference = np.ceil(np.clip(sobel, 0, 255)).astype(np.uint8).reshape(-1)
+    if reference.size != math.prod(output_shape):
+        raise ValueError(f"reference size {reference.size} does not match output shape bytes {math.prod(output_shape)}")
+    return reference
 
 
 def candidate_stats(
@@ -121,10 +207,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path, help="Pulled model_run_tool output_0 file.")
     parser.add_argument("--golden", required=True, type=Path, help="Packaged y.bin golden file.")
+    parser.add_argument("--input", type=Path, help="Optional packaged x.bin input; enables NPU half-op reference diagnostics.")
     parser.add_argument("--shape", type=parse_shape, default=DEFAULT_SHAPE, help="Expected output shape. Default: 1,1,761,1022.")
+    parser.add_argument("--input-shape", type=parse_shape, default=DEFAULT_INPUT_SHAPE, help="Expected input shape. Default: 1,763,1024,3.")
     parser.add_argument("--max-abs-diff", type=int, default=1, help="Allowed absolute uint8 delta. Default: 1.")
     parser.add_argument("--max-diff-rate", type=float, default=None, help="Optional allowed mismatch rate, e.g. 0.01.")
     parser.add_argument("--sample-limit", type=int, default=40, help="Mismatch samples per candidate. Default: 40.")
+    parser.add_argument("--top-mismatches", type=int, default=20, help="Largest mismatch samples for diagnostics. Default: 20.")
     args = parser.parse_args()
 
     if args.max_abs_diff < 0:
@@ -133,6 +222,8 @@ def main() -> int:
         parser.error("--max-diff-rate must be between 0 and 1")
     if args.sample_limit < 0:
         parser.error("--sample-limit must be non-negative")
+    if args.top_mismatches < 0:
+        parser.error("--top-mismatches must be non-negative")
 
     expected_bytes = math.prod(args.shape)
     output = np.fromfile(args.output, dtype=np.uint8)
@@ -263,6 +354,49 @@ def main() -> int:
         print("dump_size_status=EXACT_TENSOR_SIZE")
     else:
         print("dump_size_status=NON_RAW_UINT8_FORMAT_CANDIDATE")
+
+    if best["name"] in {"raw_uint8_prefix", "raw_uint8_full"}:
+        best_output = output[:expected_bytes] if best["name"] == "raw_uint8_prefix" else output
+        print_diff_diagnostics(f"diagnostic.{best['name']}_vs_golden", best_output, golden, args.shape, args.top_mismatches)
+
+    if args.input:
+        print()
+        try:
+            npu_reference = npu_half_sobel_reference(args.input, args.input_shape, args.shape)
+        except ValueError as exc:
+            print("reference.npu_half_clipped.available=false")
+            print(f"reference.npu_half_clipped.reason={exc}")
+        else:
+            print("reference.npu_half_clipped.available=true")
+            print("reference.npu_half_clipped.note=numpy simulation of the Ascend C half-precision Sobel arithmetic path, clipped before uint8 cast")
+            print(f"reference.npu_half_clipped.sha256={hashlib.sha256(npu_reference.tobytes()).hexdigest()}")
+
+            reference_vs_golden = candidate_stats(
+                "npu_half_clipped_vs_golden",
+                npu_reference,
+                golden,
+                "NPU half-op reference compared to packaged OpenCV golden",
+                args.sample_limit,
+            )
+            print_candidate(reference_vs_golden, args.max_abs_diff, args.max_diff_rate)
+            print_diff_diagnostics("diagnostic.npu_half_clipped_vs_golden", npu_reference, golden, args.shape, args.top_mismatches)
+
+            if output.size >= expected_bytes:
+                output_prefix_vs_reference = candidate_stats(
+                    "raw_uint8_prefix_vs_npu_half_clipped",
+                    output[:expected_bytes],
+                    npu_reference,
+                    "device raw uint8 prefix compared to NPU half-op reference",
+                    args.sample_limit,
+                )
+                print_candidate(output_prefix_vs_reference, args.max_abs_diff, args.max_diff_rate)
+                print_diff_diagnostics(
+                    "diagnostic.raw_uint8_prefix_vs_npu_half_clipped",
+                    output[:expected_bytes],
+                    npu_reference,
+                    args.shape,
+                    args.top_mismatches,
+                )
 
     if passes:
         print("decision=PASS_ACCURACY_THRESHOLD")

@@ -174,11 +174,13 @@ perl -0pi -e 's/-j\$\(nproc\)/-j\${KIRIN_BUILD_JOBS:-\$(nproc)}/g' build_and_ins
 # dav_l311 provides Transpose4DImpl, while the public wrapper compiles a cSize==1
 # branch that references TransposeUB2UBImpl, which is absent for this architecture.
 perl -0pi -e 's/uint32_t offset;\n/uint32_t offset = 0;\n/g; s/\(0 < j < cntW - 1\)/(0 < j \&\& j < cntW - 1)/g; s/AscendC::Transpose\(tempTensor0, xLocal, stackBuffer, transposeParams\);/#if __NPU_ARCH__ == 3113\n        AscendC::Transpose4DImpl(tempTensor0, xLocal, stackBuffer, transposeParams);\n#else\n        AscendC::Transpose(tempTensor0, xLocal, stackBuffer, transposeParams);\n#endif/g' op_kernel/sobel_custom.cpp
+perl -0pi -e 's/AscendC::Add\(tmpBuf0, dx, dy, w \* \(h - 2\)\);\n        \/\/ half->u8/AscendC::Add(tmpBuf0, dx, dy, w * (h - 2));\n        AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));\n        \/\/ half->u8/g' op_kernel/sobel_custom.cpp
 
 compute_unit_block="$(grep -A4 '"ASCEND_COMPUTE_UNIT"' CMakePresets.json || true)"
 grep -q '"value": "kirin9030"' <<<"${compute_unit_block}" || die "failed to set ASCEND_COMPUTE_UNIT"
 grep -q 'AddConfig("kirin9030"' op_host/sobel_custom.cpp || die "failed to set AddConfig"
 grep -q 'Transpose4DImpl' op_kernel/sobel_custom.cpp || die "failed to apply dav_l311 transpose patch"
+grep -q 'Mins(tmpBuf0, tmpBuf0, half(255)' op_kernel/sobel_custom.cpp || die "failed to apply uint8 clamp patch"
 
 set +e +u
 source "${KIRIN_CANN_HOME}/set_env.sh" >"${ART}/set_env.stdout" 2>"${ART}/set_env.stderr"
