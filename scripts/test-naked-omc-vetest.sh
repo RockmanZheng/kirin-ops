@@ -24,6 +24,7 @@ BUNDLE_OUTPUT_NAME=""
 BUNDLE_TARGET_SOC=""
 BUNDLE_COMPARE=""
 BUNDLE_COMPARE_MODE=""
+BUNDLE_COMPARE_VALIDATOR=""
 OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
@@ -49,6 +50,7 @@ RAW_HILOG_MODE="${RAW_HILOG_MODE:-auto}"
 PULL_OUTPUT=1
 COMPARE=1
 COMPARE_MODE="${COMPARE_MODE:-auto}"
+COMPARE_VALIDATOR="${COMPARE_VALIDATOR:-auto}"
 STRICT=1
 DRY_RUN=0
 EVIDENCE_INITIALIZED=0
@@ -63,6 +65,7 @@ OUTPUT_NAME_EXPLICIT=0
 TARGET_SOC_EXPLICIT=0
 COMPARE_EXPLICIT=0
 COMPARE_MODE_EXPLICIT=0
+COMPARE_VALIDATOR_EXPLICIT=0
 LOG_RE="${LOG_RE:-model_run_tool|output_0|CANN|HIAI|NN|OH_NN|success|failed|ERROR|error|RunModel|LoadModel|InitIOTensors|compat|compil|Build|Executor|GetDeviceID|SetDevice|offline|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Model Process|status:1}"
 RUNNER_LAUNCH_ERROR_RE="${RUNNER_LAUNCH_ERROR_RE:-inaccessible or not found|no such file|not found|permission denied|exec format error|cannot execute binary file|cannot link executable|bad elf|invalid elf|library .*not found|linker .*not found}"
 FAILURE_HINT_RE="${FAILURE_HINT_RE:-Load model|loading model|Model Process|CheckPlatformInfo|CheckCompatibility|platform =|now form|no runtime support|RestoreFromBuffer|HIAI_MR_GetVersion|Recompile failed|BuildModelByHcl failed|status:1}"
@@ -113,9 +116,11 @@ Options:
                          Default: include raw hilog only when filtered hilog is empty.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not compare pulled output with the golden file.
-  --compare-mode MODE    Output comparison mode: auto, byte, or sobel.
-                         Default: auto. Sobel bundles use the Python/numpy
-                         tolerance-aware comparator; other bundles use cmp.
+  --compare-mode MODE    Output comparison mode: auto, byte, or tensor.
+                         Default: auto. Supported tensor validators use
+                         Python/numpy; other bundles use cmp.
+  --compare-validator NAME
+                         Tensor validator: auto or sobel. Default: auto.
   --no-logs              Do not capture hilog.
   --no-strict            Do not exit nonzero when output/log validation is incomplete.
   --dry-run              Print resolved settings and exit.
@@ -208,7 +213,13 @@ normalize_compare_mode() {
   printf '%s\n' "${mode}" | tr '[:upper:]' '[:lower:]'
 }
 
-is_sobel_compare_candidate() {
+normalize_compare_validator() {
+  local validator="$1"
+
+  printf '%s\n' "${validator}" | tr '[:upper:]' '[:lower:]'
+}
+
+is_sobel_tensor_validator_candidate() {
   local omc_base
   local haystack
 
@@ -217,23 +228,62 @@ is_sobel_compare_candidate() {
   [[ "${haystack}" == *sobel* || "${haystack}" == *soble* ]]
 }
 
-resolve_compare_mode() {
+select_tensor_compare_validator() {
   local requested
+
+  requested="$(normalize_compare_validator "${COMPARE_VALIDATOR}")"
+  case "${requested}" in
+    auto|'')
+      if is_sobel_tensor_validator_candidate; then
+        printf 'sobel\n'
+      fi
+      ;;
+    sobel|soble)
+      printf 'sobel\n'
+      ;;
+    *)
+      die "compare validator must be auto or sobel; got: ${COMPARE_VALIDATOR}"
+      ;;
+  esac
+
+  return 0
+}
+
+resolve_compare_settings() {
+  local requested
+  local selected_validator
 
   requested="$(normalize_compare_mode "${COMPARE_MODE}")"
   case "${requested}" in
-    auto)
-      if is_sobel_compare_candidate; then
-        printf 'sobel\n'
+    auto|'')
+      selected_validator="$(select_tensor_compare_validator)"
+      if [ -n "${selected_validator}" ]; then
+        COMPARE_MODE="tensor"
+        COMPARE_VALIDATOR="${selected_validator}"
       else
-        printf 'byte\n'
+        COMPARE_MODE="byte"
+        COMPARE_VALIDATOR="none"
       fi
       ;;
-    byte|sobel)
-      printf '%s\n' "${requested}"
+    byte)
+      COMPARE_MODE="byte"
+      COMPARE_VALIDATOR="none"
+      ;;
+    tensor)
+      selected_validator="$(select_tensor_compare_validator)"
+      if [ -z "${selected_validator}" ]; then
+        die "COMPARE_MODE=tensor requires a supported compare validator; use --compare-validator sobel or a Sobel bundle"
+      fi
+      COMPARE_MODE="tensor"
+      COMPARE_VALIDATOR="${selected_validator}"
+      ;;
+    sobel|soble)
+      warn "compare mode '${COMPARE_MODE}' is deprecated; use --compare-mode tensor instead"
+      COMPARE_MODE="tensor"
+      COMPARE_VALIDATOR="sobel"
       ;;
     *)
-      die "compare mode must be auto, byte, or sobel; got: ${COMPARE_MODE}"
+      die "compare mode must be auto, byte, or tensor; got: ${COMPARE_MODE}"
       ;;
   esac
 }
@@ -248,6 +298,7 @@ run_byte_compare() {
 
   {
     echo "compare_mode=byte"
+    echo "compare_validator=none"
     echo "output=${OUTPUT_LOCAL}"
     echo "golden=${GOLDEN}"
     echo "status=${status}"
@@ -259,14 +310,15 @@ run_byte_compare() {
   return "${status}"
 }
 
-run_sobel_compare() {
+run_sobel_tensor_compare() {
   local input_for_reference
   local status
   local -a compare_cmd
 
   if ! command -v python3 >/dev/null 2>&1; then
     {
-      echo "compare_mode=sobel"
+      echo "compare_mode=tensor"
+      echo "compare_validator=sobel"
       echo "status=127"
       echo "reason=python3 not found on host running this script"
     } > "${COMPARE_LOG}"
@@ -275,7 +327,8 @@ run_sobel_compare() {
 
   if ! python3 -c 'import numpy' >/dev/null 2>&1; then
     {
-      echo "compare_mode=sobel"
+      echo "compare_mode=tensor"
+      echo "compare_validator=sobel"
       echo "status=127"
       echo "reason=python3 numpy module not found on host running this script"
     } > "${COMPARE_LOG}"
@@ -284,7 +337,8 @@ run_sobel_compare() {
 
   if [ ! -f "${ROOT}/scripts/compare-sobel-output.py" ]; then
     {
-      echo "compare_mode=sobel"
+      echo "compare_mode=tensor"
+      echo "compare_validator=sobel"
       echo "status=127"
       echo "reason=compare-sobel-output.py not found"
     } > "${COMPARE_LOG}"
@@ -301,7 +355,8 @@ run_sobel_compare() {
 
   set +e
   {
-    echo "compare_mode=sobel"
+    echo "compare_mode=tensor"
+    echo "compare_validator=sobel"
     printf 'compare_command='
     printf '%q ' "${compare_cmd[@]}"
     printf '\n\n'
@@ -449,6 +504,9 @@ load_bundle_manifest() {
         ;;
       COMPARE_MODE|COMPARE_TOOL|OUTPUT_COMPARE_MODE)
         BUNDLE_COMPARE_MODE="${value}"
+        ;;
+      COMPARE_VALIDATOR|OUTPUT_COMPARE_VALIDATOR)
+        BUNDLE_COMPARE_VALIDATOR="${value}"
         ;;
       *)
         warn "ignoring unknown bundle manifest key ${key} in ${manifest}"
@@ -633,6 +691,7 @@ write_failure_summary_if_missing() {
     echo "output_pulled=${OUTPUT_PULLED:-0}"
     echo "compare=${COMPARE:-}"
     echo "compare_mode=${COMPARE_MODE:-}"
+    echo "compare_validator=${COMPARE_VALIDATOR:-}"
     echo "compare_result=${COMPARE_RESULT:-NOT_REACHED}"
     echo "run_failed=${RUN_FAILED:-1}"
     echo "run_failure_reason=${RUN_FAILURE_REASON:-${failure_message}}"
@@ -963,9 +1022,15 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --compare-mode)
-      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or sobel"
+      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or tensor"
       COMPARE_MODE="$2"
       COMPARE_MODE_EXPLICIT=1
+      shift 2
+      ;;
+    --compare-validator)
+      [ "$#" -ge 2 ] || die "--compare-validator requires auto or sobel"
+      COMPARE_VALIDATOR="$2"
+      COMPARE_VALIDATOR_EXPLICIT=1
       shift 2
       ;;
     --no-logs)
@@ -1049,6 +1114,10 @@ if [ -n "${BUNDLE_DIR}" ]; then
   if [ "${COMPARE_MODE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_MODE}" ]; then
     COMPARE_MODE="${BUNDLE_COMPARE_MODE}"
   fi
+
+  if [ "${COMPARE_VALIDATOR_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_VALIDATOR}" ]; then
+    COMPARE_VALIDATOR="${BUNDLE_COMPARE_VALIDATOR}"
+  fi
 elif [ -d "${DEFAULT_BUNDLE_DIR}" ]; then
   [ "${OMC_EXPLICIT}" -eq 1 ] || OMC="${DEFAULT_BUNDLE_DIR}/SobelCustom.omc"
   [ "${INPUT_EXPLICIT}" -eq 1 ] || INPUT="${DEFAULT_BUNDLE_DIR}/x.bin"
@@ -1059,7 +1128,7 @@ elif [ -z "${OMC}" ] && [ -f "${PREBUILT_OMC}" ]; then
   OMC="${PREBUILT_OMC}"
 fi
 
-COMPARE_MODE="$(resolve_compare_mode)"
+resolve_compare_settings
 
 case "${LOG_SECONDS}" in
   ''|*[!0-9]*)
@@ -1151,6 +1220,7 @@ RUNNER_LAUNCH_ERROR_RE=${RUNNER_LAUNCH_ERROR_RE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 COMPARE_MODE=${COMPARE_MODE}
+COMPARE_VALIDATOR=${COMPARE_VALIDATOR}
 STRICT=${STRICT}
 LOG_RE=${LOG_RE}
 EOF
@@ -1555,12 +1625,19 @@ fi
 
 COMPARE_RESULT="SKIPPED"
 if [ "${COMPARE}" -eq 1 ] && [ "${OUTPUT_PULLED}" -eq 1 ] && [ -n "${GOLDEN}" ] && [ -f "${GOLDEN}" ]; then
-  if [ "${COMPARE_MODE}" = "sobel" ]; then
-    log "checking Sobel output with Python/numpy tolerance-aware comparator"
-    set +e
-    run_sobel_compare
-    COMPARE_STATUS=$?
-    set -e
+  if [ "${COMPARE_MODE}" = "tensor" ]; then
+    case "${COMPARE_VALIDATOR}" in
+      sobel)
+        log "checking tensor output with Python/numpy validator: sobel"
+        set +e
+        run_sobel_tensor_compare
+        COMPARE_STATUS=$?
+        set -e
+        ;;
+      *)
+        die "unsupported tensor compare validator: ${COMPARE_VALIDATOR}"
+        ;;
+    esac
   else
     log "checking output byte-for-byte against golden"
     set +e
@@ -1571,10 +1648,10 @@ if [ "${COMPARE}" -eq 1 ] && [ "${OUTPUT_PULLED}" -eq 1 ] && [ -n "${GOLDEN}" ] 
 
   if [ "${COMPARE_STATUS}" -eq 0 ]; then
     COMPARE_RESULT="PASS"
-    log "golden compare passed (${COMPARE_MODE})"
+    log "golden compare passed (${COMPARE_MODE}/${COMPARE_VALIDATOR})"
   else
     COMPARE_RESULT="FAIL"
-    warn "golden compare failed (${COMPARE_MODE}); inspect ${COMPARE_LOG}"
+    warn "golden compare failed (${COMPARE_MODE}/${COMPARE_VALIDATOR}); inspect ${COMPARE_LOG}"
   fi
 fi
 
@@ -1612,6 +1689,7 @@ fi
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
   echo "compare_mode=${COMPARE_MODE}"
+  echo "compare_validator=${COMPARE_VALIDATOR}"
   echo "compare_result=${COMPARE_RESULT}"
   echo "run_failed=${RUN_FAILED:-0}"
   echo "run_failure_reason=${RUN_FAILURE_REASON:-}"

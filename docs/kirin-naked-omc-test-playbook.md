@@ -311,7 +311,7 @@ scripts/compare-sobel-output.py \
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --bundle-dir "$PWD/kirin9030-sobel-custom-vector-fix-2026-08-04" \
-  --compare-mode sobel
+  --compare-mode tensor
 ```
 
 ## 多输入算子
@@ -380,7 +380,8 @@ GOLDEN       可选；存在时做 compare
 OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
 TARGET_SOC   目标芯片断言，例如 kirin9030
 COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
-COMPARE_MODE auto、byte、sobel；默认 auto。Sobel 模型用 Python/numpy 精度验证，其他模型做 byte compare
+COMPARE_MODE auto、byte、tensor；默认 auto。tensor 表示使用 Python/numpy 输出契约验证
+COMPARE_VALIDATOR auto、sobel；默认 auto。当前 tensor validator 支持 Sobel 输出契约
 ```
 
 打包命令：
