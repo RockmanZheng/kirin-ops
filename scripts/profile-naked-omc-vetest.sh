@@ -17,9 +17,11 @@ BUNDLE_GOLDEN=""
 BUNDLE_OUTPUT_NAME=""
 BUNDLE_TARGET_SOC=""
 BUNDLE_COMPARE=""
+BUNDLE_COMPARE_SCRIPT=""
 OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
+COMPARE_SCRIPT="${COMPARE_SCRIPT:-}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
 TARGET="${TARGET:-}"
 TARGET_SOC="${TARGET_SOC:-}"
@@ -35,6 +37,7 @@ RUN_ID="${RUN_ID:-}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 COMPARE=1
 COMPARE_EXPLICIT=0
+COMPARE_SCRIPT_EXPLICIT=0
 NO_DATA_PROC=0
 NO_ARCHIVE=0
 NO_CLEAN=0
@@ -85,6 +88,8 @@ Options:
   --run-id ID            Stable run id. Default: host timestamp.
   --evidence-dir DIR     Host evidence dir. Default: artifacts/profiling/<run-id>.
   --no-compare           Pull output but skip golden comparison.
+  --compare-script PATH  Python precision validator. Default: Sobel bundles use
+                         scripts/compare-sobel-output.py. Byte cmp is retired.
   --no-data-proc         Ask target script not to run data_proc_tool.
   --no-archive           Ask target script not to archive the run directory.
   --no-clean             Ask target script not to remove stale profile/output files.
@@ -213,6 +218,33 @@ resolve_bundle_input_paths() {
   printf '%s\n' "${output}"
 }
 
+is_sobel_precision_candidate() {
+  local omc_base
+  local haystack
+
+  omc_base="$(basename "${OMC:-}")"
+  haystack="$(printf '%s %s %s\n' "${omc_base}" "${BUNDLE_NAME:-}" "${BUNDLE_DESCRIPTION:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${haystack}" == *sobel* || "${haystack}" == *soble* ]]
+}
+
+resolve_compare_script() {
+  if [ -n "${COMPARE_SCRIPT}" ]; then
+    case "${COMPARE_SCRIPT}" in
+      /*|~*)
+        ;;
+      *)
+        if [ -n "${BUNDLE_DIR}" ] && [ -f "${BUNDLE_DIR}/${COMPARE_SCRIPT}" ]; then
+          COMPARE_SCRIPT="${BUNDLE_DIR}/${COMPARE_SCRIPT}"
+        elif [ -f "${ROOT}/${COMPARE_SCRIPT}" ]; then
+          COMPARE_SCRIPT="${ROOT}/${COMPARE_SCRIPT}"
+        fi
+        ;;
+    esac
+  elif is_sobel_precision_candidate; then
+    COMPARE_SCRIPT="${ROOT}/scripts/compare-sobel-output.py"
+  fi
+}
+
 load_bundle_manifest() {
   local manifest="$1"
   local line
@@ -260,6 +292,12 @@ load_bundle_manifest() {
         ;;
       COMPARE)
         BUNDLE_COMPARE="${value}"
+        ;;
+      COMPARE_SCRIPT|COMPARE_TOOL|OUTPUT_COMPARE_SCRIPT|PRECISION_SCRIPT)
+        BUNDLE_COMPARE_SCRIPT="${value}"
+        ;;
+      COMPARE_MODE|OUTPUT_COMPARE_MODE|COMPARE_VALIDATOR|OUTPUT_COMPARE_VALIDATOR)
+        warn "ignoring retired bundle manifest key ${key} in ${manifest}; use COMPARE_SCRIPT"
         ;;
       *)
         warn "ignoring unknown bundle manifest key ${key} in ${manifest}"
@@ -411,6 +449,15 @@ while [ "$#" -gt 0 ]; do
       COMPARE_EXPLICIT=1
       shift
       ;;
+    --compare-script)
+      [ "$#" -ge 2 ] || die "--compare-script requires a Python script path"
+      COMPARE_SCRIPT="$2"
+      COMPARE_SCRIPT_EXPLICIT=1
+      shift 2
+      ;;
+    --compare-mode|--compare-validator)
+      die "$1 is retired; use --compare-script for a Python precision validator, or rely on Sobel auto-detection"
+      ;;
     --no-data-proc)
       NO_DATA_PROC=1
       shift
@@ -532,6 +579,12 @@ if [ "${COMPARE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE}" ]; then
   esac
 fi
 
+if [ "${COMPARE_SCRIPT_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_SCRIPT}" ]; then
+  COMPARE_SCRIPT="${BUNDLE_COMPARE_SCRIPT}"
+fi
+
+resolve_compare_script
+
 [ -n "${OMC}" ] || die "OMC not provided and not found in bundle"
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC}"
 [ -n "${INPUT}" ] || die "input not provided and not found in bundle"
@@ -551,6 +604,9 @@ if [ "${COMPARE}" -eq 1 ]; then
     warn "golden file not found; output will be pulled but not compared: ${GOLDEN}"
     COMPARE=0
   fi
+fi
+if [ "${COMPARE}" -eq 1 ] && [ -z "${COMPARE_SCRIPT}" ]; then
+  die "COMPARE_SCRIPT not set; byte comparison is retired"
 fi
 
 if [ -z "${RUN_ID}" ]; then
@@ -652,6 +708,7 @@ fi
   printf 'MODEL_RUN_TOOL="%s"\n' "$(manifest_value "${MODEL_RUN_TOOL}")"
   printf 'DATA_PROC_TOOL="%s"\n' "$(manifest_value "${DATA_PROC_TOOL}")"
   printf 'COMPARE="%s"\n' "${COMPARE}"
+  printf 'COMPARE_SCRIPT="%s"\n' "$(manifest_value "${COMPARE_SCRIPT}")"
   printf 'HILOG_CLEAR="%s"\n' "${HILOG_CLEAR}"
   printf 'HILOG_CLEAR_TIMEOUT="%s"\n' "${HILOG_CLEAR_TIMEOUT}"
   printf 'OMC_EXPLICIT="%s"\n' "${OMC_EXPLICIT}"
@@ -691,6 +748,7 @@ OMC=${OMC}
 INPUT=${INPUT}
 GOLDEN=${GOLDEN:-<none>}
 COMPARE=${COMPARE}
+COMPARE_SCRIPT=${COMPARE_SCRIPT:-<auto/none>}
 HILOG_CLEAR=${HILOG_CLEAR}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 
@@ -796,24 +854,32 @@ set -e
 COMPARE_RESULT="SKIPPED"
 if [ "${COMPARE}" -eq 1 ] && [ "${PULL_OUTPUT_STATUS}" -eq 0 ] && [ -s "${OUTPUT_LOCAL}" ]; then
   if [ -n "${GOLDEN}" ] && [ -f "${GOLDEN}" ]; then
-    if [[ "$(basename "${OMC}")" == *Sobel* || "${BUNDLE_NAME}" == *sobel* || "${BUNDLE_NAME}" == *Sobel* ]]; then
-      log "checking Sobel output with tolerance-aware comparator"
-      set +e
-      "${ROOT}/scripts/compare-sobel-output.py" --output "${OUTPUT_LOCAL}" --golden "${GOLDEN}" --input "${INPUT_FILES[0]}" > "${COMPARE_LOG}" 2>&1
-      COMPARE_STATUS=$?
-      set -e
-    else
-      log "checking output byte-for-byte against golden"
-      set +e
-      cmp -s "${OUTPUT_LOCAL}" "${GOLDEN}"
-      COMPARE_STATUS=$?
-      set -e
+    if [ -z "${COMPARE_SCRIPT}" ]; then
       {
-        echo "compare_mode=byte"
-        echo "output=${OUTPUT_LOCAL}"
-        echo "golden=${GOLDEN}"
-        echo "status=${COMPARE_STATUS}"
+        echo "compare_script="
+        echo "status=127"
+        echo "reason=COMPARE_SCRIPT not set; byte comparison is retired"
       } > "${COMPARE_LOG}"
+      COMPARE_STATUS=127
+    elif [ ! -f "${COMPARE_SCRIPT}" ]; then
+      {
+        echo "compare_script=${COMPARE_SCRIPT}"
+        echo "status=127"
+        echo "reason=compare script not found"
+      } > "${COMPARE_LOG}"
+      COMPARE_STATUS=127
+    else
+      log "checking output with Python precision validator: ${COMPARE_SCRIPT}"
+      set +e
+      {
+        echo "compare_script=${COMPARE_SCRIPT}"
+        printf 'compare_command='
+        printf '%q ' python3 "${COMPARE_SCRIPT}" --output "${OUTPUT_LOCAL}" --golden "${GOLDEN}" --input "${INPUT_FILES[0]}"
+        printf '\n\n'
+        python3 "${COMPARE_SCRIPT}" --output "${OUTPUT_LOCAL}" --golden "${GOLDEN}" --input "${INPUT_FILES[0]}"
+      } > "${COMPARE_LOG}" 2>&1
+      COMPARE_STATUS=$?
+      set -e
     fi
     if [ "${COMPARE_STATUS}" -eq 0 ]; then
       COMPARE_RESULT="PASS"
@@ -833,6 +899,7 @@ fi
   echo "pull_output_status=${PULL_OUTPUT_STATUS}"
   echo "output_local=${OUTPUT_LOCAL}"
   echo "compare=${COMPARE}"
+  echo "compare_script=${COMPARE_SCRIPT:-}"
   echo "compare_result=${COMPARE_RESULT}"
 } > "${EVIDENCE_DIR}/summary.txt"
 

@@ -15,30 +15,30 @@ dump with trailing bytes.
 ## Change Plan
 
 - Keep generic OMC bundle behavior backward compatible.
-- Add compare mode resolution to `scripts/test-naked-omc-vetest.sh`:
-  - `auto`: Sobel/Soble bundle names or OMC names use the Sobel comparator.
-  - `tensor`: use a Python/numpy tensor validator selected by
-    `COMPARE_VALIDATOR`.
-  - `byte`: force byte-for-byte compare.
+- Retire byte-for-byte golden comparison from the host vetest wrappers.
+- Treat `COMPARE=1` as "run the Python precision validator".
+- Use `COMPARE_SCRIPT` when a bundle needs a specific validator script.
+- Auto-select `scripts/compare-sobel-output.py` for Sobel/Soble bundles.
 - Preserve `COMPARE=0` as output-pulled-only confirmation.
-- Let bundle manifests optionally specify `COMPARE_MODE` and
-  `COMPARE_VALIDATOR`.
+- Let bundle manifests optionally specify `COMPARE_SCRIPT`.
 - Keep prod-side validation on the host that runs `hdc`; the Python script
   validates the output pulled back from the real device.
 
-Naming correction:
+Naming correction history:
 
-- `sobel` is an output-contract validator, not a comparison mode.
-- The public mode name is now `tensor`; the selected validator is recorded as
-  `compare_validator=sobel`.
+- `sobel` is not a comparison mode.
+- `tensor` / `validator` / `contract` also over-specified the shell wrapper.
+- The precision contract belongs inside the Python script.
+- The shell wrapper now only chooses a Python script, runs it, and records its
+  result.
 
 ## Current State
 
 - `scripts/test-naked-omc-vetest.sh` now runs
-  `scripts/compare-sobel-output.py` for `COMPARE_MODE=tensor` with
-  `COMPARE_VALIDATOR=sobel`.
-- `scripts/package-naked-omc-bundle.sh` can write `COMPARE_MODE` and
-  `COMPARE_VALIDATOR`.
+  `scripts/compare-sobel-output.py` for Sobel bundles, or a bundle-provided
+  `COMPARE_SCRIPT`.
+- `scripts/profile-naked-omc-vetest.sh` uses the same Python compare behavior.
+- `scripts/package-naked-omc-bundle.sh` can write `COMPARE_SCRIPT`.
 - `docs/kirin-naked-omc-test-playbook.md` documents Python/numpy Sobel compare.
 - Existing Kirin9030 Sobel vector-fix bundles still work through auto detection
   because their names include `sobel`.
@@ -56,15 +56,14 @@ scripts/test-naked-omc-vetest.sh \
   --bundle-dir "/root/z84378291/kirin9030-sobel-custom-vector-fix-2026-08-04" \
   --device-dir "$REMOTE_DIR" \
   --model-run-tool "$REMOTE_DIR/model_run_tool" \
-  --compare-mode tensor \
   --no-clear-logs
 ```
 
 Expected success signal:
 
 ```text
-[kirin-naked-omc] checking tensor output with Python/numpy validator: sobel
-[kirin-naked-omc] golden compare passed (tensor/sobel)
+[kirin-naked-omc] checking output with Python precision validator: ...
+[kirin-naked-omc] golden compare passed
 [kirin-naked-omc] PASS_CANDIDATE
 ```
 
