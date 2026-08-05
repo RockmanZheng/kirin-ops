@@ -37,7 +37,8 @@ Naming correction history:
 - `scripts/test-naked-omc-vetest.sh` now runs
   `scripts/compare-sobel-output.py` for Sobel bundles, or a bundle-provided
   `COMPARE_SCRIPT`.
-- `scripts/profile-naked-omc-vetest.sh` uses the same Python compare behavior.
+- `scripts/profile-naked-omc-vetest.sh` uses the same Python compare behavior
+  and fails if compare was requested but the pulled output is missing or empty.
 - `scripts/package-naked-omc-bundle.sh` can write `COMPARE_SCRIPT`.
 - `docs/kirin-naked-omc-test-playbook.md` documents Python/numpy Sobel compare.
 - Existing Kirin9030 Sobel vector-fix bundles still work through auto detection
@@ -85,3 +86,18 @@ Console color policy:
 - Interactive terminals, including MobaXterm, auto-render ANSI colors.
 - `FORCE_COLOR=1` or `CLICOLOR_FORCE=1` forces color.
 - `NO_COLOR=1` disables auto-color for copy/paste logs and CI unless color is explicitly forced.
+
+## Profiling wrapper review follow-up
+
+Review finding: `scripts/profile-naked-omc-vetest.sh` already selected
+`scripts/compare-sobel-output.py` for Sobel/Soble bundles, but its inline compare
+block was weaker than `scripts/test-naked-omc-vetest.sh`:
+
+- It did not preflight-check `python3`.
+- It did not preflight-check `numpy`.
+- It skipped compare when output pull failed, then could still exit success.
+
+Fix: replace the inline block with the same Python precision validator flow used
+by the test wrapper. A profiling run with `COMPARE=1` now only reports `PASS`
+when `compare-sobel-output.py` returns success; missing/empty pulled output is a
+compare failure.

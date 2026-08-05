@@ -61,7 +61,7 @@ The script:
   3. Pushes target-profile-omc.sh, the .omc, and input files to the target.
   4. Runs target-profile-omc.sh on-device.
   5. Pulls the profiling archive or run directory back to artifacts/profiling/.
-  6. Pulls output_0 and checks it against the bundle golden when available.
+  6. Pulls output_0 and validates it with the Python precision script when available.
 
 Options:
   --bundle-dir DIR       Local bundle dir. Default:
@@ -107,16 +107,39 @@ Example:
 USAGE
 }
 
+COLOR_RESET=""
+COLOR_INFO=""
+COLOR_WARN=""
+COLOR_ERROR=""
+COLOR_SUCCESS=""
+COLOR_FORCE=0
+if [ "${FORCE_COLOR:-}" = "1" ] || [ "${CLICOLOR_FORCE:-}" = "1" ]; then
+  COLOR_FORCE=1
+fi
+if [ "${COLOR_FORCE}" -eq 1 ] || {
+  [ -z "${NO_COLOR:-}" ] && { [ -t 1 ] || [ -t 2 ]; }
+}; then
+  COLOR_RESET="$(printf '\033[0m')"
+  COLOR_INFO="$(printf '\033[36m')"
+  COLOR_WARN="$(printf '\033[33m')"
+  COLOR_ERROR="$(printf '\033[31m')"
+  COLOR_SUCCESS="$(printf '\033[1;32m')"
+fi
+
 log() {
-  printf '[kirin-profile] %s\n' "$*"
+  printf '%s[kirin-profile]%s %s\n' "${COLOR_INFO}" "${COLOR_RESET}" "$*"
+}
+
+log_success() {
+  printf '%s[kirin-profile] PASS:%s %s\n' "${COLOR_SUCCESS}" "${COLOR_RESET}" "$*"
 }
 
 warn() {
-  printf '[kirin-profile] WARN: %s\n' "$*" >&2
+  printf '%s[kirin-profile] WARN:%s %s\n' "${COLOR_WARN}" "${COLOR_RESET}" "$*" >&2
 }
 
 die() {
-  printf '[kirin-profile] ERROR: %s\n' "$*" >&2
+  printf '%s[kirin-profile] ERROR:%s %s\n' "${COLOR_ERROR}" "${COLOR_RESET}" "$*" >&2
   exit 1
 }
 
@@ -243,6 +266,69 @@ resolve_compare_script() {
   elif is_sobel_precision_candidate; then
     COMPARE_SCRIPT="${ROOT}/scripts/compare-sobel-output.py"
   fi
+}
+
+run_python_compare() {
+  local input_for_reference
+  local status
+  local -a compare_cmd
+
+  if [ -z "${COMPARE_SCRIPT}" ]; then
+    {
+      echo "compare_script="
+      echo "status=127"
+      echo "reason=COMPARE_SCRIPT not set; byte comparison is retired"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  if [ ! -f "${COMPARE_SCRIPT}" ]; then
+    {
+      echo "compare_script=${COMPARE_SCRIPT}"
+      echo "status=127"
+      echo "reason=compare script not found"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    {
+      echo "compare_script=${COMPARE_SCRIPT}"
+      echo "status=127"
+      echo "reason=python3 not found on host running this script"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  if ! python3 -c 'import numpy' >/dev/null 2>&1; then
+    {
+      echo "compare_script=${COMPARE_SCRIPT}"
+      echo "status=127"
+      echo "reason=python3 numpy module not found on host running this script"
+    } > "${COMPARE_LOG}"
+    return 127
+  fi
+
+  input_for_reference="${INPUT_FILES[0]}"
+  compare_cmd=(
+    python3 "${COMPARE_SCRIPT}"
+    --output "${OUTPUT_LOCAL}"
+    --golden "${GOLDEN}"
+    --input "${input_for_reference}"
+  )
+
+  set +e
+  {
+    echo "compare_script=${COMPARE_SCRIPT}"
+    printf 'compare_command='
+    printf '%q ' "${compare_cmd[@]}"
+    printf '\n\n'
+    "${compare_cmd[@]}"
+  } > "${COMPARE_LOG}" 2>&1
+  status=$?
+  set -e
+
+  return "${status}"
 }
 
 load_bundle_manifest() {
@@ -853,42 +939,38 @@ set -e
 
 COMPARE_RESULT="SKIPPED"
 if [ "${COMPARE}" -eq 1 ] && [ "${PULL_OUTPUT_STATUS}" -eq 0 ] && [ -s "${OUTPUT_LOCAL}" ]; then
-  if [ -n "${GOLDEN}" ] && [ -f "${GOLDEN}" ]; then
-    if [ -z "${COMPARE_SCRIPT}" ]; then
-      {
-        echo "compare_script="
-        echo "status=127"
-        echo "reason=COMPARE_SCRIPT not set; byte comparison is retired"
-      } > "${COMPARE_LOG}"
-      COMPARE_STATUS=127
-    elif [ ! -f "${COMPARE_SCRIPT}" ]; then
-      {
-        echo "compare_script=${COMPARE_SCRIPT}"
-        echo "status=127"
-        echo "reason=compare script not found"
-      } > "${COMPARE_LOG}"
-      COMPARE_STATUS=127
-    else
-      log "checking output with Python precision validator: ${COMPARE_SCRIPT}"
-      set +e
-      {
-        echo "compare_script=${COMPARE_SCRIPT}"
-        printf 'compare_command='
-        printf '%q ' python3 "${COMPARE_SCRIPT}" --output "${OUTPUT_LOCAL}" --golden "${GOLDEN}" --input "${INPUT_FILES[0]}"
-        printf '\n\n'
-        python3 "${COMPARE_SCRIPT}" --output "${OUTPUT_LOCAL}" --golden "${GOLDEN}" --input "${INPUT_FILES[0]}"
-      } > "${COMPARE_LOG}" 2>&1
-      COMPARE_STATUS=$?
-      set -e
-    fi
-    if [ "${COMPARE_STATUS}" -eq 0 ]; then
-      COMPARE_RESULT="PASS"
-    else
-      COMPARE_RESULT="FAIL"
-    fi
+  log "checking output with Python precision validator: ${COMPARE_SCRIPT:-<missing>}"
+  set +e
+  run_python_compare
+  COMPARE_STATUS=$?
+  set -e
+
+  if [ "${COMPARE_STATUS}" -eq 0 ]; then
+    COMPARE_RESULT="PASS"
+    log "golden compare passed"
+  else
+    COMPARE_RESULT="FAIL"
+    warn "golden compare failed; inspect ${COMPARE_LOG}"
   fi
 elif [ "${COMPARE}" -eq 1 ]; then
-  warn "output pull failed or output is empty; compare skipped"
+  COMPARE_RESULT="FAIL"
+  {
+    echo "compare_script=${COMPARE_SCRIPT:-}"
+    echo "status=127"
+    echo "reason=output pull failed or output is empty; Python precision validation could not run"
+  } > "${COMPARE_LOG}"
+  warn "output pull failed or output is empty; compare cannot run"
+fi
+
+RESULT="NOT_CONFIRMED"
+if [ "${TARGET_STATUS}" -eq 0 ] && [ "${PULL_OUTPUT_STATUS}" -eq 0 ] && [ -s "${OUTPUT_LOCAL}" ]; then
+  if [ "${COMPARE_RESULT}" = "PASS" ]; then
+    RESULT="PASS"
+  elif [ "${COMPARE}" -eq 0 ]; then
+    RESULT="PASS_OUTPUT_PULLED_NO_COMPARE"
+  else
+    RESULT="OUTPUT_PULLED_NO_COMPARE"
+  fi
 fi
 
 {
@@ -901,11 +983,13 @@ fi
   echo "compare=${COMPARE}"
   echo "compare_script=${COMPARE_SCRIPT:-}"
   echo "compare_result=${COMPARE_RESULT}"
+  echo "result=${RESULT}"
 } > "${EVIDENCE_DIR}/summary.txt"
 
 log "target status: ${TARGET_STATUS}"
 log "output pull status: ${PULL_OUTPUT_STATUS}"
 log "compare result: ${COMPARE_RESULT}"
+log "result: ${RESULT}"
 log "host evidence: ${EVIDENCE_DIR}"
 
 if [ "${TARGET_STATUS}" -ne 0 ]; then
@@ -913,6 +997,12 @@ if [ "${TARGET_STATUS}" -ne 0 ]; then
 fi
 if [ "${COMPARE_RESULT}" = "FAIL" ]; then
   die "output comparison failed; inspect ${COMPARE_LOG}"
+fi
+
+if [ "${RESULT}" = "PASS" ]; then
+  log_success "profiling run completed and output passed golden comparison."
+elif [ "${RESULT}" = "PASS_OUTPUT_PULLED_NO_COMPARE" ]; then
+  log "PASS_OUTPUT_PULLED_NO_COMPARE: profiling run completed and output was pulled; no golden compare was requested."
 fi
 
 exit 0

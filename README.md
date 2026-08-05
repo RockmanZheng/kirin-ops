@@ -54,8 +54,9 @@ Scripted naked OMC `model_run_tool` wrapper:
 scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin9030-gelu-fp16-2026-08-04
 ```
 
-For Sobel bundles with `x.bin/y.bin`, the wrapper uses `scripts/compare-sobel-output.py`
-to validate the pulled tensor with Python/numpy after the real-device run.
+For Sobel bundles with `x.bin/y.bin`, the test and profiling wrappers use
+`scripts/compare-sobel-output.py` to validate the pulled tensor with
+Python/numpy after the real-device run.
 
 Package a generic bundle once an `.omc` and its inputs are available:
 
