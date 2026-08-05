@@ -77,6 +77,39 @@ model_run_tool 已解析到模型名 SobelCustom
 
 ## 当前已准备文件
 
+最新 Kirin9030 Sobel vector-fix release:
+
+```text
+https://github.com/RockmanZheng/kirin-ops/releases/tag/kirin9030-sobel-custom-vector-fix-2026-08-04
+```
+
+Asset:
+
+```text
+kirin9030-sobel-custom-vector-fix-2026-08-04.zip
+sha256: 0094517a8e25f65578b68cc2f4bc9562c35dcf2624100f92a3b24197c1a47058
+```
+
+解压后目录内容：
+
+```text
+kirin9030-sobel-custom-vector-fix-2026-08-04/
+  README.txt
+  SHA256SUMS
+  SobelCustom_kirin9030.omc
+  x.bin
+  y.bin
+  bundle.env
+```
+
+模型和数据 SHA256：
+
+```text
+7f93d3c17806d04d0893583beff65274acb2ce318e3da6d64ddd80c5f29461c6  SobelCustom_kirin9030.omc
+9f2f4d02d225403d3f480b9e88bb7b2b362f1f8a1751c6e34041d38b0935f03b  x.bin
+4f2655e865146d12cfc0513fca54040746c830f23120905079bdec24d3d0e8b1  y.bin
+```
+
 注意：下面这个 Sobel release 是旧的 Kirin9020 预编译样例，不是 Kirin9030/Changsha 目标。它现在只能作为脚本和 runner 路径验证材料，不能再作为 Kirin9030 测试 artifact。
 
 Release:
@@ -183,15 +216,15 @@ shasum -a 256 kirin-sobel-naked-omc-2026-08-03.zip
 unzip -o kirin-sobel-naked-omc-2026-08-03.zip
 ```
 
-如果后续已经有 Kirin9030 bundle，例如 `kirin9030-gelu-fp16-2026-08-04.zip`，下载和解压方式相同：
+下载最新 Kirin9030 Sobel vector-fix bundle：
 
 ```bash
-gh release download kirin9030-gelu-fp16-2026-08-04 \
+gh release download kirin9030-sobel-custom-vector-fix-2026-08-04 \
   --repo RockmanZheng/kirin-ops \
-  --pattern 'kirin9030-gelu-fp16-2026-08-04.zip'
+  --pattern 'kirin9030-sobel-custom-vector-fix-2026-08-04.zip'
 
-shasum -a 256 kirin9030-gelu-fp16-2026-08-04.zip
-unzip -o kirin9030-gelu-fp16-2026-08-04.zip
+shasum -a 256 kirin9030-sobel-custom-vector-fix-2026-08-04.zip
+unzip -o kirin9030-sobel-custom-vector-fix-2026-08-04.zip
 ```
 
 确认设备：
@@ -225,12 +258,12 @@ scripts/test-naked-omc-vetest.sh \
 
 当前这个 Sobel bundle 的 `.omc` 是 `kirin9020`。如果设备侧 `ohos.boot.chiptype` 与人工传入的 `--target-soc` 冲突，或 target SoC 与模型 SoC 冲突，严格模式下脚本会 fail fast，不会继续发送文件和运行模型。
 
-Kirin9030 bundle 跑法相同，只是 bundle 里会带 `bundle.env`：
+Kirin9030 bundle 跑法相同，bundle 里带 `bundle.env`：
 
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --target "$SN" \
-  --bundle-dir "$PWD/kirin9030-gelu-fp16-2026-08-04" \
+  --bundle-dir "$PWD/kirin9030-sobel-custom-vector-fix-2026-08-04" \
   --device-dir "/data/local/tmp/z84378291" \
   --model-run-tool "/data/local/tmp/z84378291/model_run_tool" \
   --no-clear-logs
