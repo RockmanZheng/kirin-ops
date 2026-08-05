@@ -14,6 +14,7 @@ OUTPUT_NAME="output_0"
 TARGET_SOC=""
 COMPARE=""
 COMPARE_MODE=""
+COMPARE_VALIDATOR=""
 OUT_DIR="${ROOT}/artifacts/naked-omc"
 RELEASE_DIR="${ROOT}/artifacts/releases"
 FORCE=0
@@ -45,7 +46,9 @@ Options:
   --compare 0|1        Whether the runner should compare output with golden.
                        Default: 1 when --golden is present, otherwise 0.
   --compare-mode MODE  Optional output comparison mode for bundle.env:
-                       auto, byte, or sobel.
+                       auto, byte, or tensor.
+  --compare-validator NAME
+                       Optional tensor validator for bundle.env: auto or sobel.
   --out-dir DIR        Bundle root. Default: artifacts/naked-omc.
   --release-dir DIR    Zip output root. Default: artifacts/releases.
   --force              Replace an existing bundle directory/zip.
@@ -145,8 +148,13 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --compare-mode)
-      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or sobel"
+      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or tensor"
       COMPARE_MODE="$2"
+      shift 2
+      ;;
+    --compare-validator)
+      [ "$#" -ge 2 ] || die "--compare-validator requires auto or sobel"
+      COMPARE_VALIDATOR="$2"
       shift 2
       ;;
     --out-dir)
@@ -202,11 +210,28 @@ esac
 
 if [ -n "${COMPARE_MODE}" ]; then
   case "$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')" in
-    auto|byte|sobel)
+    auto|byte|tensor)
       COMPARE_MODE="$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')"
       ;;
+    sobel|soble)
+      COMPARE_MODE="tensor"
+      ;;
     *)
-      die "--compare-mode must be auto, byte, or sobel"
+      die "--compare-mode must be auto, byte, or tensor"
+      ;;
+  esac
+fi
+
+if [ -n "${COMPARE_VALIDATOR}" ]; then
+  case "$(printf '%s' "${COMPARE_VALIDATOR}" | tr '[:upper:]' '[:lower:]')" in
+    auto|sobel)
+      COMPARE_VALIDATOR="$(printf '%s' "${COMPARE_VALIDATOR}" | tr '[:upper:]' '[:lower:]')"
+      ;;
+    soble)
+      COMPARE_VALIDATOR="sobel"
+      ;;
+    *)
+      die "--compare-validator must be auto or sobel"
       ;;
   esac
 fi
@@ -262,6 +287,9 @@ fi
   printf 'COMPARE="%s"\n' "${COMPARE}"
   if [ -n "${COMPARE_MODE}" ]; then
     printf 'COMPARE_MODE="%s"\n' "$(manifest_value "${COMPARE_MODE}")"
+  fi
+  if [ -n "${COMPARE_VALIDATOR}" ]; then
+    printf 'COMPARE_VALIDATOR="%s"\n' "$(manifest_value "${COMPARE_VALIDATOR}")"
   fi
 } > "${BUNDLE_DIR}/bundle.env"
 
