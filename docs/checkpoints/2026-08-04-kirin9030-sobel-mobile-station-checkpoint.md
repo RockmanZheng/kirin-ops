@@ -249,6 +249,101 @@ omc sha256: 2b04cd151f8b2dd8b5ed8d367375b84eb912f6273c3337e22a375f67899ecbdc
   - `candidate.npu_half_clipped_vs_golden.nonzero_diff_count=56278`;
   - `decision=PASS_ACCURACY_THRESHOLD` for `y.bin` self-check.
 
+### 2026-08-04 Baseline And Tilefix Validation
+
+- Added `scripts/validate-sobel-baseline.py` to validate the Sobel fixture without `cv2`; it only requires numpy.
+- Ran the validator on `npu-group-3` against:
+
+```text
+input: /data1/z84378291/artifacts/kirin9030_sobel_clamped_20260804_issue4/model_conversion/x.bin
+golden: /data1/z84378291/artifacts/kirin9030_sobel_clamped_20260804_issue4/model_conversion/y.bin
+```
+
+- Golden validation:
+
+```text
+contract_reference_vs_golden.sha256=4f2655e865146d12cfc0513fca54040746c830f23120905079bdec24d3d0e8b1
+contract_reference_vs_golden.max_abs_diff=0
+contract_reference_vs_golden.nonzero_diff_count=0
+```
+
+- Full-image NPU half arithmetic reference:
+
+```text
+npu_half_full_reference_vs_golden.sha256=9ce63e7376d8977d9bd448f5a130f913b76aed9d31b4ce4679f61331b68b7035
+npu_half_full_reference_vs_golden.max_abs_diff=1
+npu_half_full_reference_vs_golden.nonzero_diff_count=56278
+npu_half_full_reference_vs_golden.abs_diff_histogram.gt5=0
+```
+
+- Source-like tiling validation found a real implementation bug in the existing tile count formula:
+
+```text
+source_tiling_counts.cntH=85
+source_tiling_counts.cntW=4
+source_tiling_counts.written_count=604520
+source_tiling_counts.unwritten_count=173222
+source_tiled_reference_vs_full_half_reference.max_abs_diff=255
+source_tiled_reference_vs_full_half_reference.nonzero_diff_count=173222
+```
+
+- Corrected tiling uses output strides `h - 2` and `w - 2`:
+
+```text
+corrected_tiling_counts.cntH=109
+corrected_tiling_counts.cntW=5
+corrected_tiling_counts.written_count=777742
+corrected_tiling_counts.unwritten_count=0
+corrected_tiled_reference_vs_full_half_reference.max_abs_diff=0
+corrected_tiled_reference_vs_full_half_reference.nonzero_diff_count=0
+decision=PASS_BASELINE_GOLDEN_AND_CORRECTED_TILING
+```
+
+- Updated `scripts/build-kirin9030-sobel-mobile-station.sh` scratch patch to replace:
+
+```cpp
+cntH = SobelCustom::CeilDiv(this->H, h);
+cntW = SobelCustom::CeilDiv(this->W, w);
+```
+
+with:
+
+```cpp
+cntH = SobelCustom::CeilDiv(this->H - 2, h - 2);
+cntW = SobelCustom::CeilDiv(this->W - 2, w - 2);
+```
+
+- Rebuilt corrected Kirin9030 Sobel OMC on `npu-group-3`:
+
+```text
+remote artifact: /data1/z84378291/artifacts/kirin9030_sobel_tilefix_20260804_issue4
+build_status=0
+atc_status=0
+patched source:
+  cntH = SobelCustom::CeilDiv(this->H - 2, h - 2);
+  cntW = SobelCustom::CeilDiv(this->W - 2, w - 2);
+  AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));
+```
+
+- Pulled and packaged tilefix bundle:
+
+```text
+bundle: artifacts/naked-omc/kirin9030-sobel-custom-tilefix-2026-08-04
+zip: artifacts/releases/kirin9030-sobel-custom-tilefix-2026-08-04.zip
+zip sha256: 361399c45f00d34d760099fd5c6dfba51758c60e6cbfed1990677b396d464846
+omc sha256: 5c4b191f4eab640aa57d14fd3ca353d818ec3f039f48974ac8023241e6a0d7d7
+input sha256: 9f2f4d02d225403d3f480b9e88bb7b2b362f1f8a1751c6e34041d38b0935f03b
+golden sha256: 4f2655e865146d12cfc0513fca54040746c830f23120905079bdec24d3d0e8b1
+```
+
+- Local checks passed:
+  - `python3 -m py_compile scripts/compare-sobel-output.py scripts/validate-sobel-baseline.py`
+  - `bash -n scripts/build-kirin9030-sobel-mobile-station.sh scripts/package-naked-omc-bundle.sh`
+  - `shellcheck scripts/build-kirin9030-sobel-mobile-station.sh scripts/package-naked-omc-bundle.sh`
+  - `git diff --check -- scripts/build-kirin9030-sobel-mobile-station.sh scripts/validate-sobel-baseline.py`
+  - bundle `SHA256SUMS`
+  - tilefix bundle runner `--dry-run`
+
 ## npu-group-3 Evidence
 
 Existing isolated containers:
