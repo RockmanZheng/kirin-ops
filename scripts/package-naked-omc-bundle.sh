@@ -13,6 +13,7 @@ GOLDEN=""
 OUTPUT_NAME="output_0"
 TARGET_SOC=""
 COMPARE=""
+COMPARE_MODE=""
 OUT_DIR="${ROOT}/artifacts/naked-omc"
 RELEASE_DIR="${ROOT}/artifacts/releases"
 FORCE=0
@@ -43,6 +44,8 @@ Options:
   --target-soc SOC     Expected target SoC, e.g. kirin9030.
   --compare 0|1        Whether the runner should compare output with golden.
                        Default: 1 when --golden is present, otherwise 0.
+  --compare-mode MODE  Optional output comparison mode for bundle.env:
+                       auto, byte, or sobel.
   --out-dir DIR        Bundle root. Default: artifacts/naked-omc.
   --release-dir DIR    Zip output root. Default: artifacts/releases.
   --force              Replace an existing bundle directory/zip.
@@ -141,6 +144,11 @@ while [ "$#" -gt 0 ]; do
       COMPARE="$2"
       shift 2
       ;;
+    --compare-mode)
+      [ "$#" -ge 2 ] || die "--compare-mode requires auto, byte, or sobel"
+      COMPARE_MODE="$2"
+      shift 2
+      ;;
     --out-dir)
       [ "$#" -ge 2 ] || die "--out-dir requires a directory"
       OUT_DIR="$2"
@@ -192,6 +200,17 @@ case "${COMPARE}" in
     ;;
 esac
 
+if [ -n "${COMPARE_MODE}" ]; then
+  case "$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')" in
+    auto|byte|sobel)
+      COMPARE_MODE="$(printf '%s' "${COMPARE_MODE}" | tr '[:upper:]' '[:lower:]')"
+      ;;
+    *)
+      die "--compare-mode must be auto, byte, or sobel"
+      ;;
+  esac
+fi
+
 mkdir -p "${OUT_DIR}" "${RELEASE_DIR}"
 OUT_DIR="$(cd "${OUT_DIR}" && pwd -P)"
 RELEASE_DIR="$(cd "${RELEASE_DIR}" && pwd -P)"
@@ -241,6 +260,9 @@ fi
     printf 'TARGET_SOC="%s"\n' "$(manifest_value "${TARGET_SOC}")"
   fi
   printf 'COMPARE="%s"\n' "${COMPARE}"
+  if [ -n "${COMPARE_MODE}" ]; then
+    printf 'COMPARE_MODE="%s"\n' "$(manifest_value "${COMPARE_MODE}")"
+  fi
 } > "${BUNDLE_DIR}/bundle.env"
 
 {
