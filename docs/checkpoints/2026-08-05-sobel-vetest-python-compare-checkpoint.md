@@ -132,3 +132,19 @@ Full fallback:
 ```bash
 scripts/collect-profiling-evidence.sh --full
 ```
+
+## Profiling enable_item follow-up
+
+Issue #17 compact report from `profile_20260805_161905` showed:
+
+- model execution passed: `RUN_STATUS=0`;
+- Python precision compare passed: `compare_result=PASS`, `result=PASS`;
+- profiling capture did not happen: `DATA_PROC_STATUS=NO_PROFILE_DIR`;
+- auto mode selected no profiling flag: `PROFILING_ARG=`;
+- the target `model_run_tool --help` exposes `--enable_item` as the profiling
+  switch, with `--enable_item=1` enabling profiling.
+
+Fix: `scripts/target-profile-omc.sh` now auto-detects `--enable_item` and runs
+`model_run_tool` with `--enable_item=1`. It also runs the command from the run
+directory so tools that emit relative profiling folders are captured under the
+same evidence archive.
