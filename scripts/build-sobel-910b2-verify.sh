@@ -15,6 +15,7 @@ DEVICE_ID="${ASCEND_DEVICE_ID:-1}"
 BUILD_JOBS="${KIRIN_BUILD_JOBS:-8}"
 MAX_ABS_DIFF="${SOBEL_MAX_ABS_DIFF:-1}"
 MAX_DIFF_RATE="${SOBEL_MAX_DIFF_RATE:-}"
+KERNEL_MODE="${SOBEL_910B2_KERNEL_MODE:-vector-fixed}"
 PULL_TO_DIR=""
 RUN_ACL=1
 RUN_COMPARE=1
@@ -26,6 +27,10 @@ usage: scripts/build-sobel-910b2-verify.sh [options]
 Builds the vendored SobelCustom Ascend C operator for Ascend910B2, converts the
 SobelCustom ONNX model to .om, runs it with the Python ACL runtime, and compares
 output_0.bin against y.bin.
+
+The 910B2 validation build defaults to a fixed version of the vendored tiled
+vector kernel. A scalar correctness kernel is available as a diagnostic fallback
+through --kernel-mode scalar-correctness.
 
 Defaults target the known-good 910B2 validation container on npu-group-3:
   host:      npu-group-3
@@ -45,6 +50,7 @@ Options:
                            If omitted, the script first tries the known generated fixture artifact.
   --device-id N            Ascend device id for ACL execution. Default: 1.
   --jobs N                 Build jobs in the container. Default: 8.
+  --kernel-mode MODE       vector-fixed or scalar-correctness. Default: vector-fixed.
   --max-abs-diff N         Compare tolerance. Default: 1.
   --max-diff-rate R        Optional mismatch-rate tolerance, e.g. 0.01.
   --pull-to-dir DIR        Pull .om, input, golden, output, logs, and manifest locally.
@@ -119,6 +125,11 @@ while [ "$#" -gt 0 ]; do
       BUILD_JOBS="$2"
       shift 2
       ;;
+    --kernel-mode)
+      [ "$#" -ge 2 ] || die "--kernel-mode requires a value"
+      KERNEL_MODE="$2"
+      shift 2
+      ;;
     --max-abs-diff)
       [ "$#" -ge 2 ] || die "--max-abs-diff requires a value"
       MAX_ABS_DIFF="$2"
@@ -172,6 +183,13 @@ case "${MAX_ABS_DIFF}" in
     die "--max-abs-diff must be a non-negative integer"
     ;;
 esac
+case "${KERNEL_MODE}" in
+  vector-fixed|scalar-correctness)
+    ;;
+  *)
+    die "--kernel-mode must be vector-fixed or scalar-correctness"
+    ;;
+esac
 if [ -n "${MAX_DIFF_RATE}" ]; then
   case "${MAX_DIFF_RATE}" in
     *[!0-9.]*|.*.*|.)
@@ -183,7 +201,7 @@ fi
 REMOTE_ARTIFACT="${REMOTE_ARTIFACT_ROOT%/}/${BUILD_NAME}"
 VENDOR_NAME="$(printf '%s' "sobel_${BUILD_NAME}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | cut -c1-63)"
 
-for helper in scripts/run-om-acl.py scripts/compare-sobel-output.py scripts/validate-sobel-baseline.py; do
+for helper in scripts/run-om-acl.py scripts/compare-sobel-output.py scripts/validate-sobel-baseline.py scripts/templates/sobel_custom_scalar_910b2.cpp; do
   [ -f "${ROOT}/${helper}" ] || die "helper not found: ${helper}"
 done
 
@@ -191,6 +209,7 @@ log "remote host: ${REMOTE_HOST}"
 log "container: ${CONTAINER}"
 log "remote artifact: ${REMOTE_ARTIFACT}"
 log "vendor: ${VENDOR_NAME}"
+log "kernel mode: ${KERNEL_MODE}"
 
 # shellcheck disable=SC2029
 ssh "${REMOTE_HOST}" "rm -rf $(shell_quote "${REMOTE_ARTIFACT}") && mkdir -p $(shell_quote "${REMOTE_ARTIFACT}/scripts")"
@@ -198,6 +217,7 @@ scp -q \
   "${ROOT}/scripts/run-om-acl.py" \
   "${ROOT}/scripts/compare-sobel-output.py" \
   "${ROOT}/scripts/validate-sobel-baseline.py" \
+  "${ROOT}/scripts/templates/sobel_custom_scalar_910b2.cpp" \
   "${REMOTE_HOST}:${REMOTE_ARTIFACT}/scripts/"
 
 set +e
@@ -210,6 +230,7 @@ ssh "${REMOTE_HOST}" \
     --env KIRIN_FIXTURES_DIR=$(shell_quote "${FIXTURES_DIR}") \
     --env KIRIN_VENDOR_NAME=$(shell_quote "${VENDOR_NAME}") \
     --env KIRIN_BUILD_JOBS=$(shell_quote "${BUILD_JOBS}") \
+    --env KIRIN_KERNEL_MODE=$(shell_quote "${KERNEL_MODE}") \
     --env KIRIN_DEVICE_ID=$(shell_quote "${DEVICE_ID}") \
     --env KIRIN_MAX_ABS_DIFF=$(shell_quote "${MAX_ABS_DIFF}") \
     --env KIRIN_MAX_DIFF_RATE=$(shell_quote "${MAX_DIFF_RATE}") \
@@ -243,6 +264,7 @@ LOG_DIR="${ART}/logs"
 [ -f "${SCRIPT_DIR}/run-om-acl.py" ] || die "run-om-acl.py was not copied to ${SCRIPT_DIR}"
 [ -f "${SCRIPT_DIR}/compare-sobel-output.py" ] || die "compare-sobel-output.py was not copied to ${SCRIPT_DIR}"
 [ -f "${SCRIPT_DIR}/validate-sobel-baseline.py" ] || die "validate-sobel-baseline.py was not copied to ${SCRIPT_DIR}"
+[ -f "${SCRIPT_DIR}/sobel_custom_scalar_910b2.cpp" ] || die "sobel_custom_scalar_910b2.cpp was not copied to ${SCRIPT_DIR}"
 
 mkdir -p "${WORK%/*}" "${MODEL_DIR}" "${LOG_DIR}"
 cp -a "${SRC}" "${WORK}"
@@ -250,9 +272,22 @@ cd "${WORK}"
 
 perl -0pi -e 's/"value": "kirinx90"/"value": "ascend910b"/g; s/"value": "customize"/"value": "'"${KIRIN_VENDOR_NAME}"'"/g' CMakePresets.json
 perl -0pi -e 's/AddConfig\("kirinx90"/AddConfig("ascend910b"/g' op_host/sobel_custom.cpp
-perl -0pi -e 's/uint32_t offset;\n/uint32_t offset = 0;\n/g; s/\(0 < j < cntW - 1\)/(0 < j \&\& j < cntW - 1)/g; s/AscendC::Transpose\(tempTensor0, xLocal, stackBuffer, transposeParams\);/#if __NPU_ARCH__ == 3113\n        AscendC::Transpose4DImpl(tempTensor0, xLocal, stackBuffer, transposeParams);\n#else\n        AscendC::Transpose(tempTensor0, xLocal, stackBuffer, transposeParams);\n#endif/g; s/^\s*AscendC::Cast\(newindex, index, AscendC::RoundMode::CAST_NONE, w - 2\);\n//mg; s/^\s*AscendC::Cast\(newindex1, index1, AscendC::RoundMode::CAST_NONE, w - 2\);\n//mg' op_kernel/sobel_custom.cpp
-perl -0pi -e 's/AscendC::Add\(tmpBuf0, dx, dy, w \* \(h - 2\)\);\n        \/\/ half->u8/AscendC::Add(tmpBuf0, dx, dy, w * (h - 2));\n        AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));\n        \/\/ half->u8/g' op_kernel/sobel_custom.cpp
-perl -0pi -e 's/cntH = SobelCustom::CeilDiv\(this->H, h\);/cntH = SobelCustom::CeilDiv(this->H - 2, h - 2);/g; s/cntW = SobelCustom::CeilDiv\(this->W, w\);/cntW = SobelCustom::CeilDiv(this->W - 2, w - 2);/g' op_kernel/sobel_custom.cpp
+case "${KIRIN_KERNEL_MODE}" in
+  vector-fixed)
+    perl -0pi -e 's/template <typename T, typename U>\n__aicore__ inline T CeilDiv\(T x, U y\)\n\{\n    return y == 0 \? x : \(1 \+ \(\(x - y\) \+ \(y - 2\) - 1\) \/ \(y - 2\)\);\n\}/template <typename T, typename U>\n__aicore__ inline T CeilDiv(T x, U y)\n{\n    return y == 0 ? x : (1 + ((x - y) + (y - 2) - 1) \/ (y - 2));\n}\n\n__aicore__ inline uint32_t DivCeil(uint32_t x, uint32_t y)\n{\n    return y == 0 ? x : (x + y - 1) \/ y;\n}\n\n__aicore__ inline uint32_t Ceil32Blocks(uint32_t bytes)\n{\n    return DivCeil(bytes, 32);\n}/g' op_kernel/sobel_custom_base.h
+    perl -0pi -e 's/constexpr int32_t BUFFER_NUM = 2; \/\/ tensor num for each queue/constexpr int32_t BUFFER_NUM = 2; \/\/ tensor num for each queue\nconstexpr uint32_t TRANSPOSE_TMP_BYTES = 8192;/g' op_kernel/sobel_custom.cpp
+    perl -0pi -e 's/pipe\.InitBuffer\(calcBuf, \(tileLength \* 4 \+ grayLength \* 14 \+ w \* 12\)\);/pipe.InitBuffer(calcBuf, (TRANSPOSE_TMP_BYTES + tileLength * 4 + grayLength * 14 + w * 12));/g' op_kernel/sobel_custom.cpp
+    perl -0pi -e 's/calcBuf\.GetWithOffset<([^>]+)>\(([^,\n]+), ([^)]+)\)/calcBuf.GetWithOffset<$1>($2, TRANSPOSE_TMP_BYTES + $3)/g' op_kernel/sobel_custom.cpp
+    perl -0pi -e 's/SobelCustom::CeilDiv\(([^,\n]+?)\s*,\s*32\)/SobelCustom::Ceil32Blocks($1)/g; s/uint32_t offset;\n/uint32_t offset = 0;\n/g; s/\(0 < j < cntW - 1\)/(0 < j \&\& j < cntW - 1)/g; s/AscendC::Transpose\(tempTensor0, xLocal, stackBuffer, transposeParams\);/#if __NPU_ARCH__ == 3113\n        AscendC::Transpose4DImpl(tempTensor0, xLocal, stackBuffer, transposeParams);\n#else\n        AscendC::Transpose(tempTensor0, xLocal, stackBuffer, transposeParams);\n#endif/g; s/^\s*AscendC::Cast\(newindex, index, AscendC::RoundMode::CAST_NONE, w - 2\);\n//mg; s/^\s*AscendC::Cast\(newindex1, index1, AscendC::RoundMode::CAST_NONE, w - 2\);\n//mg' op_kernel/sobel_custom.cpp
+    perl -0pi -e 's/AscendC::Add\(tmpBuf0, dx, dy, w \* \(h - 2\)\);\n        \/\/ half->u8/AscendC::Add(tmpBuf0, dx, dy, w * (h - 2));\n        AscendC::Mins(tmpBuf0, tmpBuf0, half(255), w * (h - 2));\n        \/\/ half->u8/g' op_kernel/sobel_custom.cpp
+    ;;
+  scalar-correctness)
+    cp "${SCRIPT_DIR}/sobel_custom_scalar_910b2.cpp" op_kernel/sobel_custom.cpp
+    ;;
+  *)
+    die "unsupported KIRIN_KERNEL_MODE=${KIRIN_KERNEL_MODE}"
+    ;;
+esac
 perl -0pi -e "s/-j\\\$\\(nproc\\)/-j${KIRIN_BUILD_JOBS}/g" build_and_install.sh
 perl -0pi -e 's#^export LD_PRELOAD=.*\n##m' build_and_install.sh
 perl -0pi -e 's/\ncd build_out\nOS_ID=/\nif [ "\${KIRIN_SKIP_OPP_INSTALL:-0}" = "1" ]; then\n    echo "INFO: skip custom op run package install"\n    exit 0\nfi\n\ncd build_out\nOS_ID=/g' build_and_install.sh
@@ -262,13 +297,31 @@ vendor_block="$(grep -A4 '"vendor_name"' CMakePresets.json || true)"
 grep -q '"value": "ascend910b"' <<<"${compute_unit_block}" || die "failed to set ASCEND_COMPUTE_UNIT=ascend910b"
 grep -q '"value": "'"${KIRIN_VENDOR_NAME}"'"' <<<"${vendor_block}" || die "failed to set vendor_name=${KIRIN_VENDOR_NAME}"
 grep -q 'AddConfig("ascend910b"' op_host/sobel_custom.cpp || die "failed to set AddConfig(ascend910b)"
-grep -q 'Transpose4DImpl' op_kernel/sobel_custom.cpp || die "failed to apply transpose compatibility patch"
-grep -q 'Mins(tmpBuf0, tmpBuf0, half(255)' op_kernel/sobel_custom.cpp || die "failed to apply uint8 clamp patch"
-grep -q 'CeilDiv(this->H - 2, h - 2)' op_kernel/sobel_custom.cpp || die "failed to apply output-height tile count patch"
-grep -q 'CeilDiv(this->W - 2, w - 2)' op_kernel/sobel_custom.cpp || die "failed to apply output-width tile count patch"
-if grep -q 'Cast(newindex, index' op_kernel/sobel_custom.cpp || grep -q 'Cast(newindex1, index1' op_kernel/sobel_custom.cpp; then
-  die "unsupported int32->uint32 index casts are still present"
-fi
+case "${KIRIN_KERNEL_MODE}" in
+  vector-fixed)
+    grep -q 'Ceil32Blocks' op_kernel/sobel_custom_base.h || die "failed to add true 32-byte ceil helper"
+    grep -q 'TRANSPOSE_TMP_BYTES = 8192' op_kernel/sobel_custom.cpp || die "failed to add dedicated transpose scratch bytes"
+    grep -q 'TRANSPOSE_TMP_BYTES + tileLength \* 4' op_kernel/sobel_custom.cpp || die "failed to grow calcBuf for transpose scratch"
+    grep -q 'GetWithOffset<T>(tileLength, TRANSPOSE_TMP_BYTES + tileLength \* 1)' op_kernel/sobel_custom.cpp || die "failed to move tempTensor0 behind transpose scratch"
+    grep -q 'Transpose4DImpl' op_kernel/sobel_custom.cpp || die "failed to apply transpose compatibility patch"
+    grep -q 'Mins(tmpBuf0, tmpBuf0, half(255)' op_kernel/sobel_custom.cpp || die "failed to apply uint8 clamp patch"
+    grep -q 'cntH = SobelCustom::CeilDiv(this->H, h);' op_kernel/sobel_custom.cpp || die "unexpected output-height tile count patch"
+    grep -q 'cntW = SobelCustom::CeilDiv(this->W, w);' op_kernel/sobel_custom.cpp || die "unexpected output-width tile count patch"
+    grep -q 'Ceil32Blocks(w \* c \* sizeof(T)' op_kernel/sobel_custom.cpp || die "failed to patch CopyIn 32-byte stride helper"
+    grep -q 'Ceil32Blocks(w \* sizeof(T)' op_kernel/sobel_custom.cpp || die "failed to patch CopyOut 32-byte stride helper"
+    grep -q '0 < j && j < cntW - 1' op_kernel/sobel_custom.cpp || die "failed to patch chained j comparison"
+    if grep -q 'Cast(newindex, index' op_kernel/sobel_custom.cpp || grep -q 'Cast(newindex1, index1' op_kernel/sobel_custom.cpp; then
+      die "unsupported int32->uint32 index casts are still present"
+    fi
+    if grep -q 'CeilDiv(this->H - 2' op_kernel/sobel_custom.cpp || grep -q 'CeilDiv(this->W - 2' op_kernel/sobel_custom.cpp; then
+      die "bad tile count patch is still present"
+    fi
+    ;;
+  scalar-correctness)
+    grep -q 'SOBEL_910B2_SCALAR_KERNEL' op_kernel/sobel_custom.cpp || die "failed to install scalar 910B2 kernel template"
+    grep -q 'SetValue(outputOffset' op_kernel/sobel_custom.cpp || die "scalar 910B2 kernel template is missing direct output write"
+    ;;
+esac
 
 set +e +u
 source "${KIRIN_CANN_HOME}/set_env.sh" >"${LOG_DIR}/set_env.stdout" 2>"${LOG_DIR}/set_env.stderr"
@@ -395,6 +448,7 @@ find "${ART}" -maxdepth 5 -type f -printf '%p %s bytes\n' | sort >"${ART}/files.
   printf 'container=%s\n' "$(hostname)"
   printf 'compute_unit=ascend910b\n'
   printf 'soc_version=Ascend910B2\n'
+  printf 'kernel_mode=%s\n' "${KIRIN_KERNEL_MODE}"
   printf 'vendor_name=%s\n' "${KIRIN_VENDOR_NAME}"
   printf 'custom_opp=%s\n' "${CUSTOM_OPP}"
   printf 'run_package=%s\n' "${RUN_PACKAGE}"

@@ -190,3 +190,110 @@ The next kernel fix should focus on tile-boundary handling:
 - the last output column block `1016:1022`;
 - `CopyIn`/`CopyOut` stride semantics and the first row of each `h - 2` output
   tile.
+
+## Accuracy Hardening Loop
+
+Date: 2026-08-04
+
+Root-cause direction:
+
+- The output format is confirmed as raw contiguous `uint8`.
+- The packaged `y.bin` golden is confirmed sane against the numpy Sobel
+  reference with `max_abs_diff=1`.
+- The 910B2 runtime mismatch is inside the scratch-patched tiled vector kernel,
+  not the output parser or golden path.
+- `SobelCustom::CeilDiv` is a special helper for input-dimension-to-output-tile
+  count. The previous 910B2 script patch incorrectly used
+  `CeilDiv(H - 2, h - 2)` and `CeilDiv(W - 2, w - 2)`, which over-counts tiles
+  and can cause out-of-bounds read/write.
+- The same special helper was also used for 32-byte `DataCopyPad` stride gaps;
+  tail tiles need a real `ceil(bytes / 32)` helper instead.
+- The highest-confidence first-row defect was `Transpose4DImpl` scratch
+  overlap: the old scratch buffer began at `calcBuf` offset 0 while
+  `tempTensor0` began at byte offset `tileLength * 1 = 6912`; CANN90 910B2
+  transpose scratch can use beyond that boundary, corrupting the first row of
+  the transposed tile.
+
+Hardening plan:
+
+1. Preserve the vendored vector kernel as evidence.
+2. Make `scripts/build-sobel-910b2-verify.sh` default to `vector-fixed`, which
+   keeps the original `CeilDiv(H, h)` / `CeilDiv(W, w)` tile count, adds a real
+   `Ceil32Blocks(bytes)` helper, reserves dedicated transpose scratch, and
+   keeps the existing 910B2 compatibility patches for transpose, index casts,
+   chained comparison, offset init, and uint8 clamp.
+3. Keep `scalar-correctness` as a diagnostic fallback only, using integer
+   fixed-point grayscale to satisfy AscendC scalar-cast restrictions.
+4. Rebuild the custom OPP package, convert the ONNX model to
+   `SobelCustom_Ascend910B2.om`, run it on ACL device 1, and compare with
+   numpy using `max_abs_diff <= 1`.
+
+Acceptance command:
+
+```bash
+scripts/build-sobel-910b2-verify.sh \
+  --build-name sobel910b2_vector_fix_20260804_01 \
+  --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
+  --pull-to-dir artifacts/remote-pulled/sobel910b2-vector-fix-20260804 \
+  --device-id 1
+```
+
+Acceptance criteria:
+
+```text
+build_status=0
+baseline_status=0
+atc_status=0
+run_status=0
+compare_status=0
+kernel_mode=vector-fixed
+candidate.raw_uint8_full.max_abs_diff<=1
+```
+
+Loop notes:
+
+- `sobel910b2_scalar_fix_20260804_01` failed at kernel compile with
+  `build_status=2` because AscendC AICore functions reject scalar casts between
+  unsigned integers and floats. The scalar fallback template was converted to
+  fixed-point integer math but is not the primary path.
+- `sobel910b2_scalar_fixedint_compile_20260804_01` validated that the fixed-
+  point scalar diagnostic mode compiles and converts with `build_status=0` and
+  `atc_status=0`; ACL execution was intentionally skipped with `--no-run`.
+
+Final 910B2 result:
+
+```text
+remote_artifact=/data1/z84378291/artifacts/sobel910b2_vector_fix_20260804_01
+local_evidence=artifacts/remote-pulled/sobel910b2-vector-fix-20260804
+build_status=0
+baseline_status=0
+atc_status=0
+run_status=0
+compare_status=0
+kernel_mode=vector-fixed
+```
+
+Accuracy evidence:
+
+```text
+sobel_output_contract.dtype=uint8
+sobel_output_contract.shape=1,1,761,1022
+files.output_size_bytes=777742
+files.golden_size_bytes=777742
+candidate.raw_uint8_full.passes_threshold=true
+candidate.raw_uint8_full.max_abs_diff=1
+candidate.raw_uint8_full.mean_abs_diff=0.072360757
+best_candidate=raw_uint8_full
+reference.npu_half_clipped.sha256=9ce63e7376d8977d9bd448f5a130f913b76aed9d31b4ce4679f61331b68b7035
+files.output_sha256=9ce63e7376d8977d9bd448f5a130f913b76aed9d31b4ce4679f61331b68b7035
+```
+
+Patched remote source evidence:
+
+```text
+TRANSPOSE_TMP_BYTES=8192
+cntH = SobelCustom::CeilDiv(this->H, h)
+cntW = SobelCustom::CeilDiv(this->W, w)
+CopyIn dstStride uses SobelCustom::Ceil32Blocks(...)
+CopyOut last-column srcStride uses SobelCustom::Ceil32Blocks(...)
+```

@@ -42,7 +42,7 @@ list in this environment.
 ```bash
 scripts/build-sobel-910b2-verify.sh \
   --fixtures-dir /data1/z84378291/artifacts/kirin9030_sobel_build_20260804_081850/sobel_custom/test \
-  --pull-to-dir artifacts/remote-pulled/sobel910b2-toolchain-smoke-20260804 \
+  --pull-to-dir artifacts/remote-pulled/sobel910b2-vector-fix-20260804 \
   --device-id 1
 ```
 
@@ -71,11 +71,11 @@ compare.status
 
 ## Current Result
 
-Latest smoke artifact:
+Latest passing artifact:
 
 ```text
-remote: /data1/z84378291/artifacts/sobel910b2_toolchain_smoke_20260804_05
-local:  artifacts/remote-pulled/sobel910b2-toolchain-smoke-20260804
+remote: /data1/z84378291/artifacts/sobel910b2_vector_fix_20260804_01
+local:  artifacts/remote-pulled/sobel910b2-vector-fix-20260804
 ```
 
 Status:
@@ -85,42 +85,49 @@ build_status=0
 baseline_status=0
 atc_status=0
 run_status=0
-compare_status=1
+compare_status=0
+kernel_mode=vector-fixed
 ```
 
-This means the 910B2 build/conversion/execution toolchain is working, but the
-current SobelCustom implementation does not pass accuracy.
+This means the 910B2 build/conversion/execution/accuracy toolchain is passing.
 
 Accuracy summary from `compare.log`:
 
 ```text
 best_candidate=raw_uint8_full
-candidate.raw_uint8_full.max_abs_diff=250
-candidate.raw_uint8_full.mean_abs_diff=4.683112137
-candidate.raw_uint8_full.nonzero_diff_count=115078
-candidate.raw_uint8_full.nonzero_diff_rate=0.147964235
-decision=FAIL_ACCURACY_THRESHOLD
+candidate.raw_uint8_full.passes_threshold=true
+candidate.raw_uint8_full.max_abs_diff=1
+candidate.raw_uint8_full.mean_abs_diff=0.072360757
+candidate.raw_uint8_full.nonzero_diff_count=56278
+candidate.raw_uint8_full.nonzero_diff_rate=0.072360757
 ```
 
-The golden baseline itself is not the problem:
+The device output now matches the numpy half-op reference exactly:
+
+```text
+files.output_sha256=9ce63e7376d8977d9bd448f5a130f913b76aed9d31b4ce4679f61331b68b7035
+reference.npu_half_clipped.sha256=9ce63e7376d8977d9bd448f5a130f913b76aed9d31b4ce4679f61331b68b7035
+```
+
+The remaining `max_abs_diff=1` mismatch versus OpenCV `y.bin` is the known
+half-precision arithmetic difference:
 
 ```text
 candidate.npu_half_clipped_vs_golden.max_abs_diff=1
 candidate.npu_half_clipped_vs_golden.nonzero_diff_rate=0.072360757
 ```
 
-The failure pattern is tile-shaped:
+The earlier failing smoke artifact was:
 
 ```text
-diagnostic.raw_uint8_full_vs_golden.tile_row_mod_7_mismatch_counts=0:64434,1:8475,2:8359,3:8515,4:8531,5:8427,6:8337
-diagnostic.raw_uint8_full_vs_golden.tile_col_block_254_mismatch_counts=0[0:254]=27712,1[254:508]=28165,2[508:762]=27965,3[762:1016]=27939,4[1016:1022]=3297
+remote: /data1/z84378291/artifacts/sobel910b2_toolchain_smoke_20260804_05
+local:  artifacts/remote-pulled/sobel910b2-toolchain-smoke-20260804
+compare_status=1
+candidate.raw_uint8_full.max_abs_diff=250
 ```
 
-Compared with the packaged golden, the mismatches are concentrated on output
-rows where `row % 7 == 0`; the last 6 output columns are also
-disproportionately bad. The same row-mod pattern remains after comparing device
-output with the numpy half-op reference, so the current evidence points at the
-tiled kernel boundary path, not at the output file format or golden generation.
+Its row-mod pattern pointed at the tiled kernel path, not at the output file
+format or golden generation.
 
 ## Hardening Notes
 
@@ -131,7 +138,11 @@ The scratch patch currently applies:
 
 - `ASCEND_COMPUTE_UNIT=ascend910b`;
 - `AddConfig("ascend910b", ...)`;
-- output tile counts based on `H - 2` and `W - 2`;
+- default `--kernel-mode vector-fixed`;
+- original output tile counts through `CeilDiv(H, h)` and `CeilDiv(W, w)`;
+- dedicated 8KB transpose scratch before the compute tensors so
+  `Transpose4DImpl` does not overlap `tempTensor0`;
+- true 32-byte ceil helper for `DataCopyPad` local stride gaps;
 - explicit clamp before final `uint8` cast;
 - initialized `offset`;
 - fixed chained comparison `0 < j && j < cntW - 1`;
@@ -139,5 +150,6 @@ The scratch patch currently applies:
 - skipped global OPP install and uses the packaged custom OPP path via
   `ASCEND_CUSTOM_OPP_PATH`.
 
-The next implementation fix should target the `SobelCustom` tiled data path,
-especially tile first-row handling and the final column tile.
+`--kernel-mode scalar-correctness` is available only as a diagnostic fallback.
+It uses direct scalar GM reads/writes and fixed-point integer grayscale math to
+avoid AscendC scalar float-cast restrictions.
