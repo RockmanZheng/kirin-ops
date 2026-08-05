@@ -101,3 +101,25 @@ Fix: replace the inline block with the same Python precision validator flow used
 by the test wrapper. A profiling run with `COMPARE=1` now only reports `PASS`
 when `compare-sobel-output.py` returns success; missing/empty pulled output is a
 compare failure.
+
+## Profiling evidence helper follow-up
+
+Issue #17 showed that asking for many manual `sed`/`find` commands is fragile.
+Add `scripts/collect-profiling-evidence.sh` so the prod host can collect one
+copy/paste diagnostics report from the latest `artifacts/profiling/profile_*`
+run, or from a selected `--run-id` / `--run-dir`.
+
+The helper reports:
+
+- host-side `summary.txt`, `manifest.env`, `host-manifest.env`, `target-script.log`, `pull.log`, and `compare.log`;
+- key fields such as `PROFILING_ARG`, `ADD_TIMES`, `DATA_PROC_STATUS`, `DATA_PROC_RESULT_PATH`, and `PROFILE_CANDIDATES_FILE`;
+- target-side `command.txt`, tool help logs, run logs, profile candidates, and file listings;
+- archive contents, including reading target-side files directly from a pulled `.tgz`/`.tar` when `target-run/` was not expanded locally.
+
+Prod command:
+
+```bash
+cd /root/z84378291/kirin-ops
+git pull --ff-only
+scripts/collect-profiling-evidence.sh
+```
