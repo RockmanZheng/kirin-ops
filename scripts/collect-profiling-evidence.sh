@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a copy/paste diagnostics report from a profiling evidence directory.
+# Build a copy/paste kernel-performance report from a profiling evidence directory.
 
 set -euo pipefail
 
@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR=""
 RUN_ID=""
 OUTPUT=""
-REPORT_MODE="brief"
+REPORT_MODE="kernel"
 MAX_FILE_LINES=80
 MAX_LIST_LINES=80
 
@@ -16,15 +16,17 @@ usage() {
   cat <<'USAGE'
 usage: scripts/collect-profiling-evidence.sh [options]
 
-Collects a copy/paste profiling diagnostics report from artifacts/profiling/.
+Collects a copy/paste profiling report from artifacts/profiling/.
 By default it selects the newest artifacts/profiling/profile_* directory and
-prints a compact report.
+prints a high-signal kernel-performance report.
 
 Options:
   --run-dir DIR       Specific profiling evidence directory.
   --run-id ID         Run id under artifacts/profiling/, e.g. profile_20260805_161905.
   --output PATH       Also write the report to PATH.
-  --brief             Compact report with key profiling/accuracy evidence. Default.
+  --kernel            Kernel-performance report. Default.
+  --performance       Alias for --kernel.
+  --brief             Compact diagnostics report with key profiling/accuracy evidence.
   --full              Full report with every known host/target/archive section.
   --max-file-lines N  Max lines per text file section. Default: 80.
   --max-list-lines N  Max lines for file/archive listing sections. Default: 80.
@@ -204,6 +206,98 @@ emit_target_grep_section() {
   { emit_target_file_content "${basename}" "${archive}" 2>/dev/null || true; } | grep -Ei "${pattern}" | sed -n "1,${max_lines}p" || printf 'no matching lines\n'
 }
 
+kv_get() {
+  local path="$1"
+  local key="$2"
+
+  [ -f "${path}" ] || return 0
+  awk -F= -v key="${key}" '
+    $1 == key {
+      value = substr($0, index($0, "=") + 1)
+    }
+    END {
+      if (value != "") {
+        print value
+      }
+    }
+  ' "${path}" 2>/dev/null || true
+}
+
+target_grep() {
+  local basename="$1"
+  local archive="$2"
+  local pattern="$3"
+  local max_lines="${4:-${MAX_FILE_LINES}}"
+
+  { emit_target_file_content "${basename}" "${archive}" 2>/dev/null || true; } | grep -Ei "${pattern}" | sed -n "1,${max_lines}p" || true
+}
+
+target_first_line() {
+  local basename="$1"
+  local archive="$2"
+  local pattern="$3"
+
+  target_grep "${basename}" "${archive}" "${pattern}" 1
+}
+
+target_count() {
+  local basename="$1"
+  local archive="$2"
+  local pattern="$3"
+
+  { emit_target_file_content "${basename}" "${archive}" 2>/dev/null || true; } | grep -Eci "${pattern}" || true
+}
+
+archive_matching_members() {
+  local archive="$1"
+  local pattern="$2"
+  local max_lines="${3:-${MAX_LIST_LINES}}"
+
+  [ -n "${archive}" ] || return 0
+  { archive_list "${archive}" 2>/dev/null || true; } | grep -Ei "${pattern}" | sed -n "1,${max_lines}p" || true
+}
+
+profile_artifact_members() {
+  local archive="$1"
+
+  {
+    archive_matching_members "${archive}" '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|json|trace)$' "${MAX_LIST_LINES}"
+    if [ -d "${RUN_DIR}/target-run" ]; then
+      find "${RUN_DIR}/target-run" -maxdepth 5 -type f 2>/dev/null | grep -Ei '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|json|trace)$' || true
+    fi
+  } | { grep -Ev '/$' || true; } | { grep -Eiv 'profile-candidates|model_run_tool|data_proc_tool|profiling-evidence-report|manifest|target-info|files-before|files-after|hashes|command\.txt|output_0' || true; } | sed '/^$/d' | sort -u | sed -n "1,${MAX_LIST_LINES}p"
+}
+
+first_csv_member() {
+  local archive="$1"
+
+  [ -n "${archive}" ] || return 0
+  archive_matching_members "${archive}" '\.csv$|(^|/)csv/' 1
+}
+
+emit_value() {
+  local key="$1"
+  local value="${2:-}"
+
+  if [ -n "${value}" ]; then
+    printf '%s=%s\n' "${key}" "${value}"
+  else
+    printf '%s=<empty>\n' "${key}"
+  fi
+}
+
+emit_kernel_csv_preview() {
+  local archive="$1"
+  local csv_member=""
+
+  csv_member="$(first_csv_member "${archive}")"
+  [ -n "${csv_member}" ] || return 0
+
+  section "kernel csv preview"
+  printf 'source=%s\n' "${csv_member}"
+  archive_extract "${archive}" "${csv_member}" 2>/dev/null | sed -n "1,${MAX_FILE_LINES}p" || true
+}
+
 emit_key_fields() {
   section "key fields"
   {
@@ -258,12 +352,156 @@ emit_archive_grep_listing() {
 emit_report_header() {
   local archive="$1"
 
-  printf '# Kirin profiling evidence report\n'
+  if [ "${REPORT_MODE}" = "kernel" ]; then
+    printf '# Kirin kernel performance report\n'
+  else
+    printf '# Kirin profiling evidence report\n'
+  fi
   printf 'generated_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  printf 'repo_root=%s\n' "${ROOT}"
+  if [ "${REPORT_MODE}" != "kernel" ]; then
+    printf 'repo_root=%s\n' "${ROOT}"
+  fi
   printf 'run_dir=%s\n' "${RUN_DIR}"
   printf 'archive=%s\n' "${archive:-<none>}"
   printf 'mode=%s\n' "${REPORT_MODE}"
+}
+
+emit_kernel_report() {
+  local archive="$1"
+  local summary_path="${RUN_DIR}/summary.txt"
+  local manifest_path="${RUN_DIR}/manifest.env"
+  local host_manifest_path="${RUN_DIR}/host-manifest.env"
+  local result=""
+  local compare_result=""
+  local run_status=""
+  local data_proc_status=""
+  local data_proc_result_path=""
+  local profile_mode=""
+  local profiling_arg=""
+  local add_times=""
+  local times=""
+  local target=""
+  local model_run_tool=""
+  local data_proc_tool=""
+  local output_type=""
+  local target_soc=""
+  local check_soc=""
+  local profile_artifacts=""
+  local profile_candidates=""
+  local inference_success_count=""
+  local profiling_enabled_count=""
+  local profiling_disabled_count=""
+  local profiling_config=""
+  local data_proc_probe=""
+  local verdict="UNAVAILABLE"
+  local reason=""
+
+  result="$(kv_get "${summary_path}" "result")"
+  compare_result="$(kv_get "${summary_path}" "compare_result")"
+  run_status="$(kv_get "${manifest_path}" "RUN_STATUS")"
+  data_proc_status="$(kv_get "${manifest_path}" "DATA_PROC_STATUS")"
+  data_proc_result_path="$(kv_get "${manifest_path}" "DATA_PROC_RESULT_PATH")"
+  profile_mode="$(kv_get "${manifest_path}" "PROFILE_MODE")"
+  profiling_arg="$(kv_get "${manifest_path}" "PROFILING_ARG")"
+  add_times="$(kv_get "${manifest_path}" "ADD_TIMES")"
+  times="$(kv_get "${manifest_path}" "TIMES")"
+  target="$(kv_get "${host_manifest_path}" "TARGET")"
+  model_run_tool="$(kv_get "${host_manifest_path}" "MODEL_RUN_TOOL")"
+  data_proc_tool="$(kv_get "${host_manifest_path}" "DATA_PROC_TOOL")"
+  output_type="$(kv_get "${host_manifest_path}" "OUTPUT_TYPE")"
+  target_soc="$(kv_get "${host_manifest_path}" "TARGET_SOC")"
+  check_soc="$(kv_get "${host_manifest_path}" "CHECK_SOC")"
+  profile_artifacts="$(profile_artifact_members "${archive}")"
+  profile_candidates="$(emit_target_file_content "profile-candidates.txt" "${archive}" 2>/dev/null || true)"
+  inference_success_count="$(target_count "model_run_tool-run.log" "${archive}" 'Inference: running model succeeded')"
+  profiling_enabled_count="$(target_count "model_run_tool-run.log" "${archive}" 'Profiling is enabled')"
+  profiling_disabled_count="$(target_count "model_run_tool-run.log" "${archive}" 'Profiling is disabled')"
+  profiling_config="$(target_first_line "model_run_tool-run.log" "${archive}" 'Profiling mode configStr')"
+  profiling_config="${profiling_config#*configStr: }"
+  data_proc_probe="$(target_first_line "data_proc_tool-help.txt" "${archive}" 'ERROR|WARN|usage|help|profile|csv|result|path')"
+
+  if [ -n "${profile_artifacts}" ]; then
+    verdict="AVAILABLE"
+    reason="candidate profiling artifact files are present; inspect the listed CSV/profile files"
+  elif [ "${data_proc_status}" = "NO_PROFILE_DIR" ]; then
+    reason="data_proc_tool was not run because no raw profiling directory was found"
+  elif [ -z "${data_proc_status}" ]; then
+    reason="manifest has no DATA_PROC_STATUS and no CSV/profile artifacts were found"
+  else
+    reason="DATA_PROC_STATUS=${data_proc_status}, but no CSV/profile artifacts were found"
+  fi
+
+  emit_report_header "${archive}"
+
+  section "kernel performance verdict"
+  emit_value "kernel_performance_data" "${verdict}"
+  emit_value "reason" "${reason}"
+  emit_value "result" "${result}"
+  emit_value "compare_result" "${compare_result}"
+  emit_value "run_status" "${run_status}"
+  emit_value "data_proc_status" "${data_proc_status}"
+  emit_value "data_proc_result_path" "${data_proc_result_path}"
+
+  section "run setup"
+  emit_value "target" "${target}"
+  emit_value "target_soc" "${target_soc}"
+  emit_value "check_soc" "${check_soc}"
+  emit_value "times" "${times}"
+  emit_value "profile_mode" "${profile_mode}"
+  emit_value "profiling_arg" "${profiling_arg}"
+  emit_value "add_times" "${add_times}"
+  emit_value "output_type" "${output_type}"
+  emit_value "model_run_tool" "${model_run_tool}"
+  emit_value "data_proc_tool" "${data_proc_tool}"
+
+  section "kernel timing data"
+  if [ -n "${profile_artifacts}" ]; then
+    printf '%s\n' "${profile_artifacts}"
+  else
+    printf 'kernel_elapsed_time=<unavailable>\n'
+    printf 'operator_or_kernel_csv=<none>\n'
+    printf 'No per-kernel elapsed-time CSV/profile artifact was found in this run.\n'
+    printf 'The model_run_tool lines named "time: N" are counted as iteration numbers here, not kernel elapsed time.\n'
+  fi
+
+  if [ -n "${profile_candidates}" ]; then
+    section "profile candidates"
+    printf '%s\n' "${profile_candidates}" | sed -n "1,${MAX_FILE_LINES}p"
+  else
+    section "profile candidates"
+    printf 'empty\n'
+  fi
+
+  section "runner evidence"
+  emit_value "model_run_tool_inference_success_count" "${inference_success_count}"
+  if [ "${profiling_enabled_count}" != "0" ]; then
+    printf 'model_run_tool_profiling_enabled=yes\n'
+  else
+    printf 'model_run_tool_profiling_enabled=no\n'
+  fi
+  if [ "${profiling_disabled_count}" != "0" ]; then
+    printf 'model_run_tool_profiling_disabled=yes\n'
+  else
+    printf 'model_run_tool_profiling_disabled=no\n'
+  fi
+  emit_value "profiling_config" "${profiling_config}"
+
+  section "data_proc evidence"
+  if emit_target_file_content "data_proc_tool-run.log" "${archive}" >/dev/null 2>&1; then
+    target_grep "data_proc_tool-run.log" "${archive}" 'ERROR|WARN|profil|profile|csv|result|path|elapsed|kernel|task' "${MAX_FILE_LINES}"
+  else
+    printf 'data_proc_tool-run.log=missing\n'
+  fi
+  emit_value "data_proc_tool_probe" "${data_proc_probe}"
+
+  emit_kernel_csv_preview "${archive}"
+
+  section "next action"
+  if [ "${verdict}" = "AVAILABLE" ]; then
+    printf 'Analyze the CSV/profile artifacts listed above for operator/kernel elapsed time.\n'
+  else
+    printf 'This run only proves inference and accuracy, not kernel performance. Capture the raw profiling directory first; then data_proc_tool can produce the kernel timing report.\n'
+  fi
 }
 
 emit_brief_report() {
@@ -315,6 +553,9 @@ emit_report() {
   local archive="$1"
 
   case "${REPORT_MODE}" in
+    kernel)
+      emit_kernel_report "${archive}"
+      ;;
     brief)
       emit_brief_report "${archive}"
       ;;
@@ -343,6 +584,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--output requires a path"
       OUTPUT="$2"
       shift 2
+      ;;
+    --kernel|--performance)
+      REPORT_MODE="kernel"
+      shift
       ;;
     --brief)
       REPORT_MODE="brief"

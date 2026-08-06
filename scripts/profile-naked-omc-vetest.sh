@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_BUNDLE_DIR="${ROOT}/artifacts/naked-omc/kirin9030-sobel-custom-2026-08-04"
 TARGET_SCRIPT="${ROOT}/scripts/target-profile-omc.sh"
+REPORT_SCRIPT="${ROOT}/scripts/collect-profiling-evidence.sh"
 
 BUNDLE_DIR="${BUNDLE_DIR:-}"
 BUNDLE_MANIFEST="${BUNDLE_MANIFEST:-}"
@@ -36,6 +37,11 @@ HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 PROFILE_MODE="${PROFILE_MODE:-auto}"
 PROFILING_ARG="${PROFILING_ARG:-}"
 PROFILE_DIR="${PROFILE_DIR:-prof_data}"
+PROFILE_REPORT="${PROFILE_REPORT:-1}"
+PROFILE_REPORT_MODE="${PROFILE_REPORT_MODE:-kernel}"
+PROFILE_REPORT_PATH="${PROFILE_REPORT_PATH:-}"
+PROFILE_REPORT_PRINT="${PROFILE_REPORT_PRINT:-1}"
+PROFILE_DATA_REQUIRED="${PROFILE_DATA_REQUIRED:-1}"
 RUN_ID="${RUN_ID:-}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-}"
 COMPARE=1
@@ -67,6 +73,7 @@ The script:
   4. Runs target-profile-omc.sh on-device.
   5. Pulls the profiling archive or run directory back to artifacts/profiling/.
   6. Pulls output_0 and validates it with the Python precision script when available.
+  7. Generates and prints a high-signal kernel performance report.
 
 Options:
   --bundle-dir DIR       Local bundle dir. Default:
@@ -94,6 +101,14 @@ Options:
   --profile-mode MODE    auto, none, or arg. Default: auto.
   --profiling-arg ARG    Explicit target model_run_tool profiling flag.
   --profile-dir NAME     Expected raw profile dir name. Default: prof_data.
+  --report-mode MODE     Report mode: kernel, brief, or full. Default: kernel.
+  --report-path PATH     Host report output path. Default:
+                         <evidence-dir>/kernel-performance-report.txt.
+  --no-print-report      Generate the report file but do not print it to stdout.
+  --no-report            Skip report generation.
+  --allow-missing-profile-data
+                         Do not fail the command when kernel profile artifacts
+                         are missing. Useful for smoke tests.
   --run-id ID            Stable run id. Default: host timestamp.
   --evidence-dir DIR     Host evidence dir. Default: artifacts/profiling/<run-id>.
   --no-compare           Pull output but skip golden comparison.
@@ -466,6 +481,88 @@ find_output_path_from_manifest() {
   printf '%s\n' "${value}"
 }
 
+report_value() {
+  local path="$1"
+  local key="$2"
+
+  [ -f "${path}" ] || return 0
+  awk -F= -v key="${key}" '
+    $1 == key {
+      value = substr($0, index($0, "=") + 1)
+    }
+    END {
+      if (value != "") {
+        print value
+      }
+    }
+  ' "${path}" 2>/dev/null || true
+}
+
+profile_data_requirement_active() {
+  [ "${PROFILE_DATA_REQUIRED}" -eq 1 ] || return 1
+  [ "${PROFILE_REPORT}" -eq 1 ] || return 1
+  [ "${PROFILE_REPORT_MODE}" = "kernel" ] || return 1
+  [ "${PROFILE_MODE}" != "none" ] || return 1
+  [ "${NO_DATA_PROC}" -eq 0 ] || return 1
+  return 0
+}
+
+generate_profile_report() {
+  REPORT_STATUS="SKIPPED"
+  PROFILE_DATA_RESULT="UNCHECKED"
+
+  if [ "${PROFILE_REPORT}" -eq 0 ]; then
+    printf 'skipped by --no-report\n' > "${REPORT_LOG}"
+    return 0
+  fi
+
+  if [ ! -f "${REPORT_SCRIPT}" ]; then
+    REPORT_STATUS=127
+    PROFILE_DATA_RESULT="UNKNOWN"
+    printf 'report script not found: %s\n' "${REPORT_SCRIPT}" > "${REPORT_LOG}"
+    warn "report generation skipped; report script not found: ${REPORT_SCRIPT}"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${PROFILE_REPORT_PATH}")"
+  log "generating profiling report: ${PROFILE_REPORT_PATH}"
+
+  local report_tmp="${PROFILE_REPORT_PATH}.tmp"
+  set +e
+  bash "${REPORT_SCRIPT}" \
+    --run-dir "${EVIDENCE_DIR}" \
+    "--${PROFILE_REPORT_MODE}" \
+    > "${report_tmp}" 2> "${REPORT_LOG}"
+  REPORT_STATUS=$?
+  set -e
+
+  if [ "${REPORT_STATUS}" -eq 0 ] && [ -s "${report_tmp}" ]; then
+    mv "${report_tmp}" "${PROFILE_REPORT_PATH}"
+    PROFILE_DATA_RESULT="$(report_value "${PROFILE_REPORT_PATH}" "kernel_performance_data")"
+    [ -n "${PROFILE_DATA_RESULT}" ] || PROFILE_DATA_RESULT="UNKNOWN"
+  else
+    PROFILE_DATA_RESULT="UNKNOWN"
+    warn "profiling report generation failed with status ${REPORT_STATUS}; inspect ${REPORT_LOG}"
+    if [ -s "${report_tmp}" ]; then
+      mv "${report_tmp}" "${PROFILE_REPORT_PATH}.partial"
+    fi
+  fi
+}
+
+append_report_summary() {
+  {
+    echo "report=${PROFILE_REPORT}"
+    echo "report_mode=${PROFILE_REPORT_MODE}"
+    echo "report_path=${PROFILE_REPORT_PATH}"
+    echo "report_print=${PROFILE_REPORT_PRINT}"
+    echo "report_status=${REPORT_STATUS}"
+    echo "profile_data_required=${PROFILE_DATA_REQUIRED}"
+    echo "profile_data_requirement_active=$(profile_data_requirement_active && printf '1' || printf '0')"
+    echo "profile_data_result=${PROFILE_DATA_RESULT}"
+    echo "workflow_result=${WORKFLOW_RESULT}"
+  } >> "${EVIDENCE_DIR}/summary.txt"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --bundle-dir)
@@ -567,6 +664,29 @@ while [ "$#" -gt 0 ]; do
       PROFILE_DIR="$2"
       shift 2
       ;;
+    --report-mode)
+      [ "$#" -ge 2 ] || die "--report-mode requires kernel, brief, or full"
+      PROFILE_REPORT_MODE="$2"
+      shift 2
+      ;;
+    --report-path)
+      [ "$#" -ge 2 ] || die "--report-path requires a path"
+      PROFILE_REPORT_PATH="$2"
+      shift 2
+      ;;
+    --no-print-report)
+      PROFILE_REPORT_PRINT=0
+      shift
+      ;;
+    --no-report)
+      PROFILE_REPORT=0
+      PROFILE_REPORT_PRINT=0
+      shift
+      ;;
+    --allow-missing-profile-data)
+      PROFILE_DATA_REQUIRED=0
+      shift
+      ;;
     --run-id)
       [ "$#" -ge 2 ] || die "--run-id requires a value"
       RUN_ID="$2"
@@ -642,6 +762,41 @@ case "${PROFILE_MODE}" in
     ;;
   *)
     die "--profile-mode must be auto, none, or arg"
+    ;;
+esac
+
+case "${PROFILE_REPORT_MODE}" in
+  performance)
+    PROFILE_REPORT_MODE="kernel"
+    ;;
+  kernel|brief|full)
+    ;;
+  *)
+    die "--report-mode must be kernel, brief, or full"
+    ;;
+esac
+
+case "${PROFILE_REPORT}" in
+  0|1)
+    ;;
+  *)
+    die "PROFILE_REPORT must be 0 or 1"
+    ;;
+esac
+
+case "${PROFILE_REPORT_PRINT}" in
+  0|1)
+    ;;
+  *)
+    die "PROFILE_REPORT_PRINT must be 0 or 1"
+    ;;
+esac
+
+case "${PROFILE_DATA_REQUIRED}" in
+  0|1)
+    ;;
+  *)
+    die "PROFILE_DATA_REQUIRED must be 0 or 1"
     ;;
 esac
 
@@ -768,6 +923,20 @@ fi
 mkdir -p "${EVIDENCE_DIR}"
 EVIDENCE_DIR="$(cd "${EVIDENCE_DIR}" && pwd -P)"
 
+if [ -z "${PROFILE_REPORT_PATH}" ]; then
+  case "${PROFILE_REPORT_MODE}" in
+    kernel)
+      PROFILE_REPORT_PATH="${EVIDENCE_DIR}/kernel-performance-report.txt"
+      ;;
+    brief)
+      PROFILE_REPORT_PATH="${EVIDENCE_DIR}/profiling-evidence-report.txt"
+      ;;
+    full)
+      PROFILE_REPORT_PATH="${EVIDENCE_DIR}/profiling-evidence-full-report.txt"
+      ;;
+  esac
+fi
+
 TARGETS_FILE="${EVIDENCE_DIR}/hdc-targets.txt"
 hdc list targets | tee "${TARGETS_FILE}" >/dev/null
 if [ -z "${TARGET}" ]; then
@@ -812,8 +981,12 @@ PUSH_LOG="${EVIDENCE_DIR}/push.log"
 PULL_LOG="${EVIDENCE_DIR}/pull.log"
 HILOG_CLEAR_LOG="${EVIDENCE_DIR}/hilog-clear.log"
 COMPARE_LOG="${EVIDENCE_DIR}/compare.log"
+REPORT_LOG="${EVIDENCE_DIR}/report-generation.log"
 TARGET_MANIFEST_LOCAL="${EVIDENCE_DIR}/manifest.env"
 OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
+REPORT_STATUS="SKIPPED"
+PROFILE_DATA_RESULT="UNCHECKED"
+WORKFLOW_RESULT="NOT_CONFIRMED"
 
 for input_file in "${INPUT_FILES[@]}"; do
   input_file="$(printf '%s' "${input_file}" | trim_value)"
@@ -868,6 +1041,11 @@ fi
   printf 'COMPARE="%s"\n' "${COMPARE}"
   printf 'COMPARE_SCRIPT="%s"\n' "$(manifest_value "${COMPARE_SCRIPT}")"
   printf 'PYTHON_BIN="%s"\n' "$(manifest_value "${PYTHON_BIN}")"
+  printf 'PROFILE_REPORT="%s"\n' "${PROFILE_REPORT}"
+  printf 'PROFILE_REPORT_MODE="%s"\n' "$(manifest_value "${PROFILE_REPORT_MODE}")"
+  printf 'PROFILE_REPORT_PATH="%s"\n' "$(manifest_value "${PROFILE_REPORT_PATH}")"
+  printf 'PROFILE_REPORT_PRINT="%s"\n' "${PROFILE_REPORT_PRINT}"
+  printf 'PROFILE_DATA_REQUIRED="%s"\n' "${PROFILE_DATA_REQUIRED}"
   printf 'HILOG_CLEAR="%s"\n' "${HILOG_CLEAR}"
   printf 'HILOG_CLEAR_TIMEOUT="%s"\n' "${HILOG_CLEAR_TIMEOUT}"
   printf 'OMC_EXPLICIT="%s"\n' "${OMC_EXPLICIT}"
@@ -912,6 +1090,11 @@ OUTPUT_TYPE=${OUTPUT_TYPE:-<none>}
 COMPARE=${COMPARE}
 COMPARE_SCRIPT=${COMPARE_SCRIPT:-<none>}
 PYTHON_BIN=${PYTHON_BIN:-<none>}
+PROFILE_REPORT=${PROFILE_REPORT}
+PROFILE_REPORT_MODE=${PROFILE_REPORT_MODE}
+PROFILE_REPORT_PATH=${PROFILE_REPORT_PATH}
+PROFILE_REPORT_PRINT=${PROFILE_REPORT_PRINT}
+PROFILE_DATA_REQUIRED=${PROFILE_DATA_REQUIRED}
 HILOG_CLEAR=${HILOG_CLEAR}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 
@@ -1067,11 +1250,33 @@ fi
   echo "result=${RESULT}"
 } > "${EVIDENCE_DIR}/summary.txt"
 
+generate_profile_report
+
+WORKFLOW_RESULT="${RESULT}"
+if [ "${PROFILE_REPORT}" -eq 1 ] && [ "${REPORT_STATUS}" != "0" ]; then
+  WORKFLOW_RESULT="REPORT_FAILED"
+elif profile_data_requirement_active && [ "${PROFILE_DATA_RESULT}" != "AVAILABLE" ]; then
+  WORKFLOW_RESULT="PROFILE_DATA_MISSING"
+fi
+append_report_summary
+
 log "target status: ${TARGET_STATUS}"
 log "output pull status: ${PULL_OUTPUT_STATUS}"
 log "compare result: ${COMPARE_RESULT}"
+log "report status: ${REPORT_STATUS}"
+log "profile data result: ${PROFILE_DATA_RESULT}"
 log "result: ${RESULT}"
+log "workflow result: ${WORKFLOW_RESULT}"
 log "host evidence: ${EVIDENCE_DIR}"
+if [ "${PROFILE_REPORT}" -eq 1 ] && [ "${REPORT_STATUS}" = "0" ]; then
+  log "profile report: ${PROFILE_REPORT_PATH}"
+fi
+
+if [ "${PROFILE_REPORT_PRINT}" -eq 1 ] && [ -f "${PROFILE_REPORT_PATH}" ]; then
+  printf '\n'
+  cat "${PROFILE_REPORT_PATH}"
+  printf '\n'
+fi
 
 if [ "${TARGET_STATUS}" -ne 0 ]; then
   die "target-side profiling collector failed; inspect ${TARGET_RUN_LOG}"
@@ -1079,9 +1284,19 @@ fi
 if [ "${COMPARE_RESULT}" = "FAIL" ]; then
   die "output comparison failed; inspect ${COMPARE_LOG}"
 fi
+if [ "${PROFILE_REPORT}" -eq 1 ] && [ "${REPORT_STATUS}" != "0" ]; then
+  die "profiling report generation failed; inspect ${REPORT_LOG}"
+fi
+if profile_data_requirement_active && [ "${PROFILE_DATA_RESULT}" != "AVAILABLE" ]; then
+  die "kernel profiling data was not captured; inspect ${PROFILE_REPORT_PATH}. Use --allow-missing-profile-data only for smoke tests."
+fi
 
 if [ "${RESULT}" = "PASS" ]; then
-  log_success "profiling run completed and output passed golden comparison."
+  if profile_data_requirement_active; then
+    log_success "profiling run completed, output passed golden comparison, and kernel profile data is available."
+  else
+    log_success "profiling run completed and output passed golden comparison."
+  fi
 elif [ "${RESULT}" = "PASS_OUTPUT_PULLED_NO_COMPARE" ]; then
   log "PASS_OUTPUT_PULLED_NO_COMPARE: profiling run completed and output was pulled; no golden compare was requested."
 fi
