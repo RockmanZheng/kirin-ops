@@ -47,7 +47,7 @@ def first_mismatches(diff: np.ndarray, output: np.ndarray, golden: np.ndarray, l
     indexes = np.flatnonzero(diff)[:limit]
     return [
         f"  offset=0x{int(index):x} output=0x{int(output[index]):02x} "
-        f"golden=0x{int(golden[index]):02x} delta={int(diff[index]):+d}"
+        f"expected=0x{int(golden[index]):02x} delta={int(diff[index]):+d}"
         for index in indexes
     ]
 
@@ -192,70 +192,39 @@ def npu_half_sobel_reference(input_path: Path, input_shape: tuple[int, ...], out
     return reference
 
 
-def candidate_stats(
-    name: str,
+def comparison_stats(
     output: np.ndarray,
-    golden: np.ndarray,
-    note: str,
+    expected: np.ndarray,
     sample_limit: int,
 ) -> dict[str, object]:
-    diff = output.astype(np.int16) - golden.astype(np.int16)
+    diff = output.astype(np.int16) - expected.astype(np.int16)
     abs_diff = np.abs(diff)
     nonzero = int(np.count_nonzero(diff))
     return {
-        "name": name,
-        "available": True,
-        "note": note,
         "max_abs_diff": int(abs_diff.max(initial=0)),
         "mean_abs_diff": float(abs_diff.mean()) if abs_diff.size else 0.0,
         "nonzero_diff_count": nonzero,
         "nonzero_diff_rate": nonzero / int(diff.size) if diff.size else 0.0,
-        "first_mismatches": first_mismatches(diff, output, golden, sample_limit),
+        "first_mismatches": first_mismatches(diff, output, expected, sample_limit),
     }
 
 
-def unavailable(name: str, reason: str) -> dict[str, object]:
-    return {"name": name, "available": False, "reason": reason}
-
-
-def print_candidate(candidate: dict[str, object], max_abs_diff: int, max_diff_rate: float | None) -> bool:
-    name = str(candidate["name"])
-    if not candidate["available"]:
-        print(f"candidate.{name}.available=false")
-        print(f"candidate.{name}.reason={candidate['reason']}")
-        return False
-
-    passes = int(candidate["max_abs_diff"]) <= max_abs_diff
+def print_comparison(name: str, stats: dict[str, object], max_abs_diff: int, max_diff_rate: float | None) -> bool:
+    passes = int(stats["max_abs_diff"]) <= max_abs_diff
     if max_diff_rate is not None:
-        passes = passes and float(candidate["nonzero_diff_rate"]) <= max_diff_rate
+        passes = passes and float(stats["nonzero_diff_rate"]) <= max_diff_rate
 
-    print(f"candidate.{name}.available=true")
-    print(f"candidate.{name}.passes_threshold={str(passes).lower()}")
-    print(f"candidate.{name}.note={candidate['note']}")
-    print(f"candidate.{name}.max_abs_diff={candidate['max_abs_diff']}")
-    print(f"candidate.{name}.mean_abs_diff={float(candidate['mean_abs_diff']):.9f}")
-    print(f"candidate.{name}.nonzero_diff_count={candidate['nonzero_diff_count']}")
-    print(f"candidate.{name}.nonzero_diff_rate={float(candidate['nonzero_diff_rate']):.9f}")
-    mismatches = candidate["first_mismatches"]
+    print(f"comparison.{name}.available=true")
+    print(f"comparison.{name}.passes_threshold={str(passes).lower()}")
+    print(f"comparison.{name}.max_abs_diff={stats['max_abs_diff']}")
+    print(f"comparison.{name}.mean_abs_diff={float(stats['mean_abs_diff']):.9f}")
+    print(f"comparison.{name}.nonzero_diff_count={stats['nonzero_diff_count']}")
+    print(f"comparison.{name}.nonzero_diff_rate={float(stats['nonzero_diff_rate']):.9f}")
+    mismatches = stats["first_mismatches"]
     if mismatches:
-        print(f"candidate.{name}.first_mismatches=")
+        print(f"comparison.{name}.first_mismatches=")
         print("\n".join(str(line) for line in mismatches))
     return passes
-
-
-def finite_float_candidate(values: np.ndarray, mode: str) -> np.ndarray | None:
-    if not np.isfinite(values).all():
-        return None
-    clipped = np.clip(values, 0, 255)
-    if mode == "round":
-        converted = np.rint(clipped)
-    elif mode == "floor":
-        converted = np.floor(clipped)
-    elif mode == "ceil":
-        converted = np.ceil(clipped)
-    else:
-        raise AssertionError(mode)
-    return converted.astype(np.uint8)
 
 
 def main() -> int:
@@ -267,7 +236,7 @@ def main() -> int:
     parser.add_argument("--input-shape", type=parse_shape, default=DEFAULT_INPUT_SHAPE, help="Expected input shape. Default: 1,763,1024,3.")
     parser.add_argument("--max-abs-diff", type=int, default=1, help="Allowed absolute uint8 delta. Default: 1.")
     parser.add_argument("--max-diff-rate", type=float, default=None, help="Optional allowed mismatch rate, e.g. 0.01.")
-    parser.add_argument("--sample-limit", type=int, default=40, help="Mismatch samples per candidate. Default: 40.")
+    parser.add_argument("--sample-limit", type=int, default=40, help="Mismatch samples per comparison. Default: 40.")
     parser.add_argument("--top-mismatches", type=int, default=20, help="Largest mismatch samples for diagnostics. Default: 20.")
     parser.add_argument("--tile-output-height", type=int, default=7, help="Sobel tile output height for diagnostics. Default: 7.")
     parser.add_argument("--tile-output-width", type=int, default=254, help="Sobel tile output width for diagnostics. Default: 254.")
@@ -300,6 +269,7 @@ def main() -> int:
     print(f"files.output_sha256={sha256_file(args.output)}")
     print(f"files.golden_sha256={sha256_file(args.golden)}")
     print(f"files.output_expected_size_ratio={output.size / expected_bytes:.6f}")
+    print(f"output_size_status={'EXACT_TENSOR_SIZE' if output.size == expected_bytes else 'SIZE_MISMATCH'}")
     print()
 
     if golden.size != expected_bytes:
@@ -307,126 +277,31 @@ def main() -> int:
         print("reason=golden file size does not match Sobel uint8 output contract")
         return 2
 
-    candidates: list[dict[str, object]] = []
-
-    if output.size == expected_bytes:
-        candidates.append(candidate_stats("raw_uint8_full", output, golden, "whole file is the uint8 tensor", args.sample_limit))
-    else:
-        candidates.append(unavailable("raw_uint8_full", "output size does not equal expected tensor bytes"))
-
-    if output.size >= expected_bytes:
-        candidates.append(
-            candidate_stats(
-                "raw_uint8_prefix",
-                output[:expected_bytes],
-                golden,
-                "first expected_bytes are the uint8 tensor; remaining bytes are dump tail",
-                args.sample_limit,
-            )
-        )
-    else:
-        candidates.append(unavailable("raw_uint8_prefix", "output is shorter than expected tensor bytes"))
-
-    if output.size >= expected_bytes * 4:
-        window = output[: expected_bytes * 4]
-        lanes = window.reshape(expected_bytes, 4)
-        for lane in range(4):
-            candidates.append(
-                candidate_stats(
-                    f"stride4_lane{lane}_uint8",
-                    lanes[:, lane],
-                    golden,
-                    f"every 4th byte lane {lane} is the uint8 tensor",
-                    args.sample_limit,
-                )
-            )
-
-        raw4 = window.tobytes()
-        for endian, label in (("<", "le"), (">", "be")):
-            values_u32 = np.frombuffer(raw4, dtype=f"{endian}u4", count=expected_bytes)
-            if bool((values_u32 > 255).any()):
-                candidates.append(unavailable(f"uint32_{label}", "at least one uint32 value is outside 0..255"))
-            else:
-                candidates.append(
-                    candidate_stats(
-                        f"uint32_{label}",
-                        values_u32.astype(np.uint8),
-                        golden,
-                        f"{label} uint32 values cast to uint8",
-                        args.sample_limit,
-                    )
-                )
-
-            values_f32 = np.frombuffer(raw4, dtype=f"{endian}f4", count=expected_bytes)
-            for mode in ("round", "floor", "ceil"):
-                converted = finite_float_candidate(values_f32, mode)
-                if converted is None:
-                    candidates.append(unavailable(f"float32_{label}_{mode}", "non-finite float32 value found"))
-                else:
-                    candidates.append(
-                        candidate_stats(
-                            f"float32_{label}_{mode}",
-                            converted,
-                            golden,
-                            f"{label} float32 values clipped to 0..255 and {mode} cast",
-                            args.sample_limit,
-                        )
-                    )
-    else:
-        candidates.append(unavailable("stride4_or_32bit", "output is shorter than 4x expected tensor bytes"))
-
-    available = [candidate for candidate in candidates if candidate["available"]]
-    available.sort(
-        key=lambda item: (
-            int(item["max_abs_diff"]),
-            float(item["mean_abs_diff"]),
-            int(item["nonzero_diff_count"]),
-        )
-    )
-
-    for candidate in candidates:
-        print_candidate(candidate, args.max_abs_diff, args.max_diff_rate)
-        print()
-
-    if not available:
-        print("decision=FAIL_NO_AVAILABLE_FORMAT_CANDIDATE")
+    if output.size != expected_bytes:
+        if output.size > expected_bytes:
+            extra = output[expected_bytes:]
+            print(f"extra_bytes_after_expected_tensor={extra.size}")
+            print(f"files.output_first_expected_bytes_sha256={hashlib.sha256(output[:expected_bytes].tobytes()).hexdigest()}")
+            print(f"files.output_extra_sha256={hashlib.sha256(extra.tobytes()).hexdigest()}")
+            print(f"files.output_extra_all_zero={str(bool((extra == 0).all())).lower()}")
+            print(f"files.output_extra_first_128_hex={extra[:128].tobytes().hex()}")
+        else:
+            print(f"missing_bytes_before_expected_tensor={expected_bytes - output.size}")
+        print("decision=FAIL_OUTPUT_SIZE_MISMATCH")
+        print("reason=output file size must exactly match Sobel uint8 tensor contract; rerun model_run_tool with --output_type=UINT8")
         return 1
 
-    best = available[0]
-    tail_size = max(0, output.size - expected_bytes)
-    print(f"best_candidate={best['name']}")
-    print(f"best_candidate.max_abs_diff={best['max_abs_diff']}")
-    print(f"best_candidate.mean_abs_diff={float(best['mean_abs_diff']):.9f}")
-    print(f"best_candidate.nonzero_diff_rate={float(best['nonzero_diff_rate']):.9f}")
-    print(f"tail_size_bytes_after_raw_uint8_prefix={tail_size}")
-    if tail_size:
-        tail = output[expected_bytes:]
-        print(f"tail_sha256_after_raw_uint8_prefix={hashlib.sha256(tail.tobytes()).hexdigest()}")
-        print(f"tail_all_zero_after_raw_uint8_prefix={str(bool((tail == 0).all())).lower()}")
-        print(f"tail_first_128_hex_after_raw_uint8_prefix={tail[:128].tobytes().hex()}")
-
-    passes = int(best["max_abs_diff"]) <= args.max_abs_diff
-    if args.max_diff_rate is not None:
-        passes = passes and float(best["nonzero_diff_rate"]) <= args.max_diff_rate
-
-    if best["name"] == "raw_uint8_prefix" and tail_size:
-        print("dump_size_status=TRAILING_BYTES_PRESENT")
-    elif best["name"] == "raw_uint8_full":
-        print("dump_size_status=EXACT_TENSOR_SIZE")
-    else:
-        print("dump_size_status=NON_RAW_UINT8_FORMAT_CANDIDATE")
-
-    if best["name"] in {"raw_uint8_prefix", "raw_uint8_full"}:
-        best_output = output[:expected_bytes] if best["name"] == "raw_uint8_prefix" else output
-        print_diff_diagnostics(
-            f"diagnostic.{best['name']}_vs_golden",
-            best_output,
-            golden,
-            args.shape,
-            args.top_mismatches,
-            args.tile_output_height,
-            args.tile_output_width,
-        )
+    output_vs_golden = comparison_stats(output, golden, args.sample_limit)
+    passes = print_comparison("output_vs_golden", output_vs_golden, args.max_abs_diff, args.max_diff_rate)
+    print_diff_diagnostics(
+        "diagnostic.output_vs_golden",
+        output,
+        golden,
+        args.shape,
+        args.top_mismatches,
+        args.tile_output_height,
+        args.tile_output_width,
+    )
 
     if args.input:
         print()
@@ -440,14 +315,12 @@ def main() -> int:
             print("reference.npu_half_clipped.note=numpy simulation of the Ascend C half-precision Sobel arithmetic path, clipped before uint8 cast")
             print(f"reference.npu_half_clipped.sha256={hashlib.sha256(npu_reference.tobytes()).hexdigest()}")
 
-            reference_vs_golden = candidate_stats(
-                "npu_half_clipped_vs_golden",
+            reference_vs_golden = comparison_stats(
                 npu_reference,
                 golden,
-                "NPU half-op reference compared to packaged OpenCV golden",
                 args.sample_limit,
             )
-            print_candidate(reference_vs_golden, args.max_abs_diff, args.max_diff_rate)
+            print_comparison("npu_half_clipped_vs_golden", reference_vs_golden, args.max_abs_diff, args.max_diff_rate)
             print_diff_diagnostics(
                 "diagnostic.npu_half_clipped_vs_golden",
                 npu_reference,
@@ -458,24 +331,17 @@ def main() -> int:
                 args.tile_output_width,
             )
 
-            if output.size >= expected_bytes:
-                output_prefix_vs_reference = candidate_stats(
-                    "raw_uint8_prefix_vs_npu_half_clipped",
-                    output[:expected_bytes],
-                    npu_reference,
-                    "device raw uint8 prefix compared to NPU half-op reference",
-                    args.sample_limit,
-                )
-                print_candidate(output_prefix_vs_reference, args.max_abs_diff, args.max_diff_rate)
-                print_diff_diagnostics(
-                    "diagnostic.raw_uint8_prefix_vs_npu_half_clipped",
-                    output[:expected_bytes],
-                    npu_reference,
-                    args.shape,
-                    args.top_mismatches,
-                    args.tile_output_height,
-                    args.tile_output_width,
-                )
+            output_vs_reference = comparison_stats(output, npu_reference, args.sample_limit)
+            print_comparison("output_vs_npu_half_clipped", output_vs_reference, args.max_abs_diff, args.max_diff_rate)
+            print_diff_diagnostics(
+                "diagnostic.output_vs_npu_half_clipped",
+                output,
+                npu_reference,
+                args.shape,
+                args.top_mismatches,
+                args.tile_output_height,
+                args.tile_output_width,
+            )
 
     if passes:
         print("decision=PASS_ACCURACY_THRESHOLD")

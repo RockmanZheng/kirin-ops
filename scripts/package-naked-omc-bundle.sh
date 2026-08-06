@@ -11,6 +11,7 @@ OMC=""
 INPUT=""
 GOLDEN=""
 OUTPUT_NAME="output_0"
+OUTPUT_TYPE=""
 TARGET_SOC=""
 COMPARE=""
 COMPARE_SCRIPT=""
@@ -41,6 +42,7 @@ Options:
   --input PATHS        Local input .bin path, or comma-separated local input paths.
   --golden PATH        Optional golden output .bin.
   --output-name NAME   Device output file to pull. Default: output_0.
+  --output-type TYPE   Device output tensor dtype, e.g. UINT8 for Sobel output_0.
   --target-soc SOC     Expected target SoC, e.g. kirin9030.
   --compare 0|1        Whether the runner should compare output with golden.
                        Default: 1 when --golden is present, otherwise 0.
@@ -132,6 +134,11 @@ while [ "$#" -gt 0 ]; do
     --output-name)
       [ "$#" -ge 2 ] || die "--output-name requires a value"
       OUTPUT_NAME="$2"
+      shift 2
+      ;;
+    --output-type)
+      [ "$#" -ge 2 ] || die "--output-type requires a value"
+      OUTPUT_TYPE="$2"
       shift 2
       ;;
     --target-soc)
@@ -255,6 +262,9 @@ fi
     printf 'GOLDEN="%s"\n' "$(manifest_value "${GOLDEN_BASE}")"
   fi
   printf 'OUTPUT_NAME="%s"\n' "$(manifest_value "${OUTPUT_NAME}")"
+  if [ -n "${OUTPUT_TYPE}" ]; then
+    printf 'OUTPUT_TYPE="%s"\n' "$(manifest_value "${OUTPUT_TYPE}")"
+  fi
   if [ -n "${TARGET_SOC}" ]; then
     printf 'TARGET_SOC="%s"\n' "$(manifest_value "${TARGET_SOC}")"
   fi

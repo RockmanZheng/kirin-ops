@@ -21,6 +21,7 @@ BUNDLE_OMC=""
 BUNDLE_INPUT=""
 BUNDLE_GOLDEN=""
 BUNDLE_OUTPUT_NAME=""
+BUNDLE_OUTPUT_TYPE=""
 BUNDLE_TARGET_SOC=""
 BUNDLE_COMPARE=""
 BUNDLE_COMPARE_SCRIPT=""
@@ -33,6 +34,7 @@ TARGET_SOC="${TARGET_SOC:-}"
 MODEL_RUN_TOOL="${MODEL_RUN_TOOL:-/data/local/tmp/model_run_tool}"
 DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
+OUTPUT_TYPE="${OUTPUT_TYPE:-}"
 LOG_SECONDS="${LOG_SECONDS:-30}"
 HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
 DIAG_TIMEOUT="${DIAG_TIMEOUT:-15}"
@@ -60,6 +62,7 @@ OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
 OUTPUT_NAME_EXPLICIT=0
+OUTPUT_TYPE_EXPLICIT=0
 TARGET_SOC_EXPLICIT=0
 COMPARE_EXPLICIT=0
 COMPARE_SCRIPT_EXPLICIT=0
@@ -93,6 +96,8 @@ Options:
   --model-run-tool PATH  Remote runner path. Default: /data/local/tmp/model_run_tool
   --device-dir PATH      Remote work dir. Default: /data/local/tmp
   --output-name NAME     Remote output file name to pull. Default: output_0
+  --output-type TYPE     Remote output tensor dtype passed to model_run_tool.
+                         Sobel/Soble bundles default to UINT8.
   --log-seconds N        Log capture window after runner start. Default: 30
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
   --evidence-archive PATH
@@ -443,6 +448,9 @@ load_bundle_manifest() {
         ;;
       OUTPUT_NAME|OUTPUT)
         BUNDLE_OUTPUT_NAME="${value}"
+        ;;
+      OUTPUT_TYPE|OUTPUT_DTYPE|MODEL_OUTPUT_TYPE)
+        BUNDLE_OUTPUT_TYPE="${value}"
         ;;
       TARGET_SOC|SOC|SOC_VERSION)
         BUNDLE_TARGET_SOC="${value}"
@@ -895,6 +903,12 @@ while [ "$#" -gt 0 ]; do
       OUTPUT_NAME_EXPLICIT=1
       shift 2
       ;;
+    --output-type)
+      [ "$#" -ge 2 ] || die "--output-type requires a dtype"
+      OUTPUT_TYPE="$2"
+      OUTPUT_TYPE_EXPLICIT=1
+      shift 2
+      ;;
     --log-seconds)
       [ "$#" -ge 2 ] || die "--log-seconds requires a number"
       LOG_SECONDS="$2"
@@ -1037,6 +1051,10 @@ if [ -n "${BUNDLE_DIR}" ]; then
     OUTPUT_NAME="${BUNDLE_OUTPUT_NAME}"
   fi
 
+  if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_OUTPUT_TYPE}" ]; then
+    OUTPUT_TYPE="${BUNDLE_OUTPUT_TYPE}"
+  fi
+
   if [ "${TARGET_SOC_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_TARGET_SOC}" ]; then
     TARGET_SOC="${BUNDLE_TARGET_SOC}"
   fi
@@ -1069,6 +1087,9 @@ elif [ -z "${OMC}" ] && [ -f "${PREBUILT_OMC}" ]; then
 fi
 
 resolve_compare_script
+if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -z "${OUTPUT_TYPE}" ] && is_sobel_precision_candidate; then
+  OUTPUT_TYPE="UINT8"
+fi
 
 case "${LOG_SECONDS}" in
   ''|*[!0-9]*)
@@ -1146,6 +1167,7 @@ INPUT=${INPUT:-<missing>}
 GOLDEN=${GOLDEN:-<none>}
 DEVICE_DIR=${DEVICE_DIR}
 OUTPUT_NAME=${OUTPUT_NAME}
+OUTPUT_TYPE=${OUTPUT_TYPE:-<none>}
 LOG_SECONDS=${LOG_SECONDS}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 DIAG_TIMEOUT=${DIAG_TIMEOUT}
@@ -1509,6 +1531,9 @@ log "removing stale output"
 "${HDC_TARGET[@]}" shell "rm -f $(remote_quote "${OUTPUT_REMOTE}")" > "${REMOTE_CLEAN_LOG}" 2>&1 || true
 
 RUN_CMD="$(remote_quote "${MODEL_RUN_TOOL}") --model=$(remote_quote "${REMOTE_OMC}") --input=$(remote_quote "${REMOTE_INPUTS}") --output_dir=$(remote_quote "${DEVICE_DIR}/")"
+if [ -n "${OUTPUT_TYPE}" ]; then
+  RUN_CMD="${RUN_CMD} --output_type=$(remote_quote "${OUTPUT_TYPE}")"
+fi
 log "running model_run_tool"
 set +e
 "${HDC_TARGET[@]}" shell "${RUN_CMD}" 2>&1 | tee "${RUN_LOG}"
@@ -1615,6 +1640,7 @@ fi
   echo "cli_target_soc_versions=$(format_soc_set "${CLI_TARGET_SOC_VERSIONS:-}")"
   echo "soc_check_result=${SOC_CHECK_RESULT:-SKIPPED}"
   echo "output_name=${OUTPUT_NAME}"
+  echo "output_type=${OUTPUT_TYPE:-}"
   echo "output_remote=${OUTPUT_REMOTE}"
   echo "output_local=${OUTPUT_LOCAL}"
   echo "output_pulled=${OUTPUT_PULLED}"
