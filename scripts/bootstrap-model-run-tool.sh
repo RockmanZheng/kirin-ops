@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Copy model_run_tool from one HarmonyOS target to another through the host.
+# Compatibility wrapper for copying model_run_tool between HarmonyOS targets.
 
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SOURCE_TARGET="${SOURCE_TARGET:-}"
 DEST_TARGET="${DEST_TARGET:-}"
@@ -17,11 +19,8 @@ usage() {
   cat <<'USAGE'
 usage: scripts/bootstrap-model-run-tool.sh --source-target SRC --dest-target DST [options]
 
-Copies a native model_run_tool from one HarmonyOS target to another:
-
-  source target:/data/local/tmp/model_run_tool
-    -> host:/tmp/model_run_tool.<SRC>
-    -> dest target:/data/local/tmp/z84378291/model_run_tool
+Compatibility wrapper for copying a native model_run_tool from one HarmonyOS
+target to another. For generic files, use scripts/copy-target-file.sh instead.
 
 Options:
   --source-target TARGET   HDC target id that already has a working runner.
@@ -40,14 +39,14 @@ Example:
     --source-target SH236HS0488 \
     --dest-target SH25BHS4036
 
-Then run the naked OMC test with:
-  scripts/test-naked-omc-vetest.sh \
-    --target SH25BHS4036 \
-    --bundle-dir "$PWD/kirin-sobel-naked-omc-2026-08-03" \
-    --device-dir /data/local/tmp/z84378291 \
-    --model-run-tool /data/local/tmp/z84378291/model_run_tool \
-    --target-soc Kirin9020 \
-    --no-clear-logs
+Equivalent generic command:
+  scripts/copy-target-file.sh \
+    --source-target SH236HS0488 \
+    --dest-target SH25BHS4036 \
+    --source-path /data/local/tmp/model_run_tool \
+    --dest-path /data/local/tmp/z84378291/model_run_tool \
+    --executable \
+    --require-non-empty
 USAGE
 }
 
@@ -66,18 +65,6 @@ die() {
 
 remote_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
-
-host_sha256() {
-  local file="$1"
-
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "${file}"
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "${file}"
-  else
-    warn "sha256sum/shasum not found"
-  fi
 }
 
 probe_runner() {
@@ -180,62 +167,35 @@ if [ -z "${LOCAL_PATH}" ]; then
   LOCAL_PATH="/tmp/model_run_tool.${SOURCE_TARGET}"
 fi
 
-DEST_DIR="${DEST_PATH%/*}"
-[ -n "${DEST_DIR}" ] && [ "${DEST_DIR}" != "${DEST_PATH}" ] || die "invalid --dest-path: ${DEST_PATH}"
+COPY_ARGS=(
+  "${ROOT}/scripts/copy-target-file.sh"
+  --source-target "${SOURCE_TARGET}"
+  --dest-target "${DEST_TARGET}"
+  --source-path "${SOURCE_PATH}"
+  --dest-path "${DEST_PATH}"
+  --local-path "${LOCAL_PATH}"
+  --executable
+  --require-non-empty
+  --hdc "${HDC_BIN}"
+)
 
 if [ "${DRY_RUN}" -eq 1 ]; then
-  cat <<EOF
-HDC_BIN=${HDC_BIN}
-SOURCE_TARGET=${SOURCE_TARGET}
-DEST_TARGET=${DEST_TARGET}
-SOURCE_PATH=${SOURCE_PATH}
-DEST_PATH=${DEST_PATH}
-DEST_DIR=${DEST_DIR}
-LOCAL_PATH=${LOCAL_PATH}
-PROBE_RUNNER=${PROBE_RUNNER}
+  "${COPY_ARGS[@]}" --dry-run
+  if [ "${PROBE_RUNNER}" -eq 1 ]; then
+    cat <<EOF
 
-Commands:
-  ${HDC_BIN} -t ${SOURCE_TARGET} file recv ${SOURCE_PATH} ${LOCAL_PATH}
-  ${HDC_BIN} -t ${DEST_TARGET} shell "mkdir -p ${DEST_DIR}"
-  ${HDC_BIN} -t ${DEST_TARGET} file send ${LOCAL_PATH} ${DEST_PATH}
-  ${HDC_BIN} -t ${DEST_TARGET} shell "chmod 755 ${DEST_PATH}"
+Runner probe commands:
+  ${HDC_BIN} -t ${SOURCE_TARGET} shell "${SOURCE_PATH} --version || ${SOURCE_PATH} --help"
+  ${HDC_BIN} -t ${DEST_TARGET} shell "${DEST_PATH} --version || ${DEST_PATH} --help"
 EOF
+  fi
   exit 0
 fi
 
-log "source target: ${SOURCE_TARGET}"
-log "dest target: ${DEST_TARGET}"
-log "source path: ${SOURCE_PATH}"
-log "dest path: ${DEST_PATH}"
-log "host temp path: ${LOCAL_PATH}"
-
 probe_runner "${SOURCE_TARGET}" "${SOURCE_PATH}" "source"
-
-log "pulling runner to host"
-mkdir -p "$(dirname "${LOCAL_PATH}")"
-"${HDC_BIN}" -t "${SOURCE_TARGET}" file recv "${SOURCE_PATH}" "${LOCAL_PATH}"
-[ -s "${LOCAL_PATH}" ] || die "pulled runner is empty or missing: ${LOCAL_PATH}"
-
-log "host runner metadata"
-ls -l "${LOCAL_PATH}"
-host_sha256 "${LOCAL_PATH}" || true
-if command -v file >/dev/null 2>&1; then
-  file "${LOCAL_PATH}" || true
-fi
-if command -v readelf >/dev/null 2>&1; then
-  readelf -l "${LOCAL_PATH}" 2>/dev/null | grep -i interpreter || true
-fi
-
-log "creating destination dir on target"
-"${HDC_BIN}" -t "${DEST_TARGET}" shell "mkdir -p $(remote_quote "${DEST_DIR}")"
-
-log "pushing runner to destination target"
-"${HDC_BIN}" -t "${DEST_TARGET}" file send "${LOCAL_PATH}" "${DEST_PATH}"
-
-log "setting execute permission"
-"${HDC_BIN}" -t "${DEST_TARGET}" shell "chmod 755 $(remote_quote "${DEST_PATH}")"
-
+"${COPY_ARGS[@]}"
 probe_runner "${DEST_TARGET}" "${DEST_PATH}" "destination"
 
+DEST_DIR="${DEST_PATH%/*}"
 log "runner bootstrap complete"
 log "use --model-run-tool ${DEST_PATH} --device-dir ${DEST_DIR} in scripts/test-naked-omc-vetest.sh"

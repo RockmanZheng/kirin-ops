@@ -680,17 +680,20 @@ sha256sum /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev
 file /tmp/model_run_tool.SH236HS0488 /tmp/model_run_tool.SH25BHS4036 2>/dev/null || true
 ```
 
-如果 `SH236HS0488` 上的 runner 已知能启动，而 `SH25BHS4036` 缺 runner，可以先复制到自己的目标目录，不覆盖公共 `/data/local/tmp/model_run_tool`：
+如果 `SH236HS0488` 上的 runner 已知能启动，而 `SH25BHS4036` 缺 runner，可以先复制到自己的目标目录，不覆盖公共 `/data/local/tmp/model_run_tool`。通用文件复制入口是 `scripts/copy-target-file.sh`；旧的 `scripts/bootstrap-model-run-tool.sh` 仍保留为 model_run_tool 专用兼容 wrapper。
 
 ```bash
 SOURCE_SN="SH236HS0488"
 TARGET_SN="SH25BHS4036"
 REMOTE_DIR="/data/local/tmp/z84378291"
 
-scripts/bootstrap-model-run-tool.sh \
+scripts/copy-target-file.sh \
   --source-target "$SOURCE_SN" \
   --dest-target "$TARGET_SN" \
-  --dest-path "$REMOTE_DIR/model_run_tool"
+  --source-path /data/local/tmp/model_run_tool \
+  --dest-path "$REMOTE_DIR/model_run_tool" \
+  --executable \
+  --require-non-empty
 ```
 
 然后用自己的 runner 路径跑 Sobel：
