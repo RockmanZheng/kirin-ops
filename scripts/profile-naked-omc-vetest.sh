@@ -34,6 +34,8 @@ MODEL_RUN_TOOL="${MODEL_RUN_TOOL:-}"
 DATA_PROC_TOOL="${DATA_PROC_TOOL:-}"
 TIMES="${TIMES:-50}"
 HILOG_CLEAR_TIMEOUT="${HILOG_CLEAR_TIMEOUT:-5}"
+HILOG_CAPTURE="${HILOG_CAPTURE:-1}"
+HILOG_FILTER_RE="${HILOG_FILTER_RE:-profil|profile|hiai|npu|nnrt|model|data_proc|cann|aicore|acl|ge|error|fail|warn}"
 PROFILE_MODE="${PROFILE_MODE:-auto}"
 PROFILING_ARG="${PROFILING_ARG:-}"
 PROFILE_DIR="${PROFILE_DIR:-prof_data}"
@@ -98,6 +100,7 @@ Options:
   --no-clear-logs        Do not run "hdc shell hilog -r" before profiling.
   --hilog-clear-timeout N
                          Seconds to wait for "hdc shell hilog -r". Default: 5.
+  --no-hilog             Do not capture live hilog during target profiling.
   --profile-mode MODE    auto, none, or arg. Default: auto.
   --profiling-arg ARG    Explicit target model_run_tool profiling flag.
   --profile-dir NAME     Expected raw profile dir name. Default: prof_data.
@@ -231,6 +234,30 @@ run_with_timeout() {
   done
 
   wait "${cmd_pid}"
+}
+
+stop_hilog_capture() {
+  if [ -n "${HILOG_PID:-}" ]; then
+    if kill -0 "${HILOG_PID}" >/dev/null 2>&1; then
+      kill "${HILOG_PID}" >/dev/null 2>&1 || true
+    fi
+    wait "${HILOG_PID}" >/dev/null 2>&1 || true
+  fi
+  HILOG_PID=""
+}
+
+filter_hilog_capture() {
+  if [ "${HILOG_CAPTURE}" -ne 1 ]; then
+    printf 'skipped by --no-hilog\n' > "${HILOG_FILTERED}"
+    return 0
+  fi
+
+  if [ ! -f "${HILOG_RAW}" ]; then
+    printf 'missing raw hilog capture\n' > "${HILOG_FILTERED}"
+    return 0
+  fi
+
+  grep -Ei "${HILOG_FILTER_RE}" "${HILOG_RAW}" > "${HILOG_FILTERED}" 2>/dev/null || true
 }
 
 resolve_bundle_path() {
@@ -649,6 +676,10 @@ while [ "$#" -gt 0 ]; do
       HILOG_CLEAR_TIMEOUT="$2"
       shift 2
       ;;
+    --no-hilog)
+      HILOG_CAPTURE=0
+      shift
+      ;;
     --profile-mode)
       [ "$#" -ge 2 ] || die "--profile-mode requires auto, none, or arg"
       PROFILE_MODE="$2"
@@ -756,6 +787,14 @@ esac
 if [ "${HILOG_CLEAR_TIMEOUT}" -lt 1 ]; then
   die "--hilog-clear-timeout must be at least 1"
 fi
+
+case "${HILOG_CAPTURE}" in
+  0|1)
+    ;;
+  *)
+    die "HILOG_CAPTURE must be 0 or 1"
+    ;;
+esac
 
 case "${PROFILE_MODE}" in
   auto|none|arg)
@@ -980,6 +1019,8 @@ HOST_MANIFEST="${EVIDENCE_DIR}/host-manifest.env"
 PUSH_LOG="${EVIDENCE_DIR}/push.log"
 PULL_LOG="${EVIDENCE_DIR}/pull.log"
 HILOG_CLEAR_LOG="${EVIDENCE_DIR}/hilog-clear.log"
+HILOG_RAW="${EVIDENCE_DIR}/hilog.raw.log"
+HILOG_FILTERED="${EVIDENCE_DIR}/hilog.filtered.log"
 COMPARE_LOG="${EVIDENCE_DIR}/compare.log"
 REPORT_LOG="${EVIDENCE_DIR}/report-generation.log"
 TARGET_MANIFEST_LOCAL="${EVIDENCE_DIR}/manifest.env"
@@ -987,6 +1028,7 @@ OUTPUT_LOCAL="${EVIDENCE_DIR}/${OUTPUT_NAME}"
 REPORT_STATUS="SKIPPED"
 PROFILE_DATA_RESULT="UNCHECKED"
 WORKFLOW_RESULT="NOT_CONFIRMED"
+HILOG_PID=""
 
 for input_file in "${INPUT_FILES[@]}"; do
   input_file="$(printf '%s' "${input_file}" | trim_value)"
@@ -1048,6 +1090,10 @@ fi
   printf 'PROFILE_DATA_REQUIRED="%s"\n' "${PROFILE_DATA_REQUIRED}"
   printf 'HILOG_CLEAR="%s"\n' "${HILOG_CLEAR}"
   printf 'HILOG_CLEAR_TIMEOUT="%s"\n' "${HILOG_CLEAR_TIMEOUT}"
+  printf 'HILOG_CAPTURE="%s"\n' "${HILOG_CAPTURE}"
+  printf 'HILOG_FILTER_RE="%s"\n' "$(manifest_value "${HILOG_FILTER_RE}")"
+  printf 'HILOG_RAW="%s"\n' "$(manifest_value "${HILOG_RAW}")"
+  printf 'HILOG_FILTERED="%s"\n' "$(manifest_value "${HILOG_FILTERED}")"
   printf 'OMC_EXPLICIT="%s"\n' "${OMC_EXPLICIT}"
   printf 'INPUT_EXPLICIT="%s"\n' "${INPUT_EXPLICIT}"
   printf 'GOLDEN_EXPLICIT="%s"\n' "${GOLDEN_EXPLICIT}"
@@ -1097,6 +1143,8 @@ PROFILE_REPORT_PRINT=${PROFILE_REPORT_PRINT}
 PROFILE_DATA_REQUIRED=${PROFILE_DATA_REQUIRED}
 HILOG_CLEAR=${HILOG_CLEAR}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
+HILOG_CAPTURE=${HILOG_CAPTURE}
+HILOG_FILTER_RE=${HILOG_FILTER_RE}
 
 Commands:
   hdc -t ${TARGET} shell mkdir -p ${REMOTE_INPUT_DIR}
@@ -1153,11 +1201,22 @@ else
   printf 'skipped by --no-clear-logs\n' > "${HILOG_CLEAR_LOG}"
 fi
 
+trap stop_hilog_capture EXIT
+if [ "${HILOG_CAPTURE}" -eq 1 ]; then
+  log "capturing live hilog during target profiling"
+  (hdc -t "${TARGET}" hilog > "${HILOG_RAW}" 2>&1) &
+  HILOG_PID=$!
+else
+  printf 'skipped by --no-hilog\n' > "${HILOG_RAW}"
+fi
+
 log "running target-side profiling collector"
 set +e
 hdc -t "${TARGET}" shell "${TARGET_CMD}" 2>&1 | tee "${TARGET_RUN_LOG}"
 TARGET_STATUS=${PIPESTATUS[0]}
 set -e
+stop_hilog_capture
+filter_hilog_capture
 
 REMOTE_RUN_DIR="${REMOTE_RUN_ROOT}/${RUN_ID}"
 REMOTE_ARCHIVE="${REMOTE_RUN_ROOT}/${RUN_ID}.tgz"
@@ -1247,6 +1306,9 @@ fi
   echo "compare_script=${COMPARE_SCRIPT:-}"
   echo "python_bin=${PYTHON_BIN:-}"
   echo "compare_result=${COMPARE_RESULT}"
+  echo "hilog_capture=${HILOG_CAPTURE}"
+  echo "hilog_raw=${HILOG_RAW}"
+  echo "hilog_filtered=${HILOG_FILTERED}"
   echo "result=${RESULT}"
 } > "${EVIDENCE_DIR}/summary.txt"
 

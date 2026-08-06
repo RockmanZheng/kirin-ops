@@ -337,7 +337,76 @@ find_profile_candidates() {
       [ -d "$path" ] || continue
       printf '%s\n' "$path"
     done
+    profile_search_roots | while IFS= read -r root; do
+      [ -n "$root" ] || continue
+      [ -d "$root" ] || continue
+      find "$root" -maxdepth 4 -type d \( \
+        -name "$PROFILE_DIR_HINT" \
+        -o -name prof_data \
+        -o -name profile \
+        -o -name profile_data \
+        -o -name profiling \
+        -o -name profiling_data \
+        -o -name 'PROF*' \
+        -o -name 'msprof*' \
+      \) -print 2>/dev/null || true
+    done
   } | awk 'NF && !seen[$0]++'
+}
+
+profile_search_roots() {
+  {
+    printf '%s\n' "$RUN_DIR"
+    printf '%s\n' "$WORK_DIR"
+    dirname "$RUN_DIR" 2>/dev/null || true
+    dirname "$MODEL_RUN_TOOL" 2>/dev/null || true
+    dirname "$OMC" 2>/dev/null || true
+    printf '%s\n' '/data/local/tmp'
+  } | awk 'NF && !seen[$0]++'
+}
+
+write_new_profile_candidates() {
+  before_file="$1"
+  after_file="$2"
+  out_file="$3"
+
+  awk '
+    FILENAME == ARGV[1] {
+      before[$0] = 1
+      next
+    }
+    NF && !before[$0] && !seen[$0]++ {
+      print
+    }
+  ' "$before_file" "$after_file" > "$out_file" 2>/dev/null || : > "$out_file"
+}
+
+write_profile_search_log() {
+  {
+    echo "### search roots"
+    profile_search_roots
+    echo
+    echo "### candidate dirs before model_run_tool"
+    if [ -s "$PROFILE_CANDIDATES_BEFORE" ]; then
+      sed -n '1,80p' "$PROFILE_CANDIDATES_BEFORE"
+    else
+      echo "empty"
+    fi
+    echo
+    echo "### candidate dirs after model_run_tool"
+    if [ -s "$PROFILE_CANDIDATES_ALL" ]; then
+      sed -n '1,80p' "$PROFILE_CANDIDATES_ALL"
+    else
+      echo "empty"
+    fi
+    echo
+    echo "### new candidate dirs"
+    if [ -s "$PROFILE_CANDIDATES" ]; then
+      sed -n '1,80p' "$PROFILE_CANDIDATES"
+    else
+      echo "empty"
+    fi
+  } > "$PROFILE_SEARCH_LOG" 2>&1
 }
 
 archive_run_dir() {
@@ -506,7 +575,10 @@ MANIFEST="$RUN_DIR/manifest.env"
 FILES_BEFORE="$RUN_DIR/files-before.txt"
 FILES_AFTER="$RUN_DIR/files-after.txt"
 HASHES="$RUN_DIR/hashes.txt"
+PROFILE_CANDIDATES_BEFORE="$RUN_DIR/profile-candidates-before.txt"
+PROFILE_CANDIDATES_ALL="$RUN_DIR/profile-candidates-all.txt"
 PROFILE_CANDIDATES="$RUN_DIR/profile-candidates.txt"
+PROFILE_SEARCH_LOG="$RUN_DIR/profile-search.txt"
 INPUT_LIST="$RUN_DIR/input-list.txt"
 INPUT_ABS_LIST="$RUN_DIR/input-absolute-list.txt"
 SOC_CHECK_LOG="$RUN_DIR/soc-check.log"
@@ -591,6 +663,8 @@ if [ "$CLEAN" -eq 1 ]; then
   rm -f "$RUN_DIR/$OUTPUT_NAME" 2>/dev/null || true
   rm -rf "${RUN_DIR:?}/$PROFILE_DIR_HINT" "${RUN_DIR:?}/prof_data" "${RUN_DIR:?}/profile" "${RUN_DIR:?}/profiling" "${RUN_DIR:?}"/PROF_* 2>/dev/null || true
 fi
+
+find_profile_candidates > "$PROFILE_CANDIDATES_BEFORE"
 
 {
   echo "### run dir before model_run_tool"
@@ -683,7 +757,9 @@ while IFS= read -r input_path; do
   hash_file_if_possible "$input_path" >> "$HASHES"
 done < "$INPUT_ABS_LIST"
 
-find_profile_candidates > "$PROFILE_CANDIDATES"
+find_profile_candidates > "$PROFILE_CANDIDATES_ALL"
+write_new_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATES"
+write_profile_search_log
 
 DATA_PROC_STATUS="SKIPPED"
 DATA_PROC_RESULT_PATH=""
@@ -709,7 +785,9 @@ if [ "$RUN_DATA_PROC" -eq 1 ]; then
   fi
 fi
 
-find_profile_candidates > "$PROFILE_CANDIDATES"
+find_profile_candidates > "$PROFILE_CANDIDATES_ALL"
+write_new_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATES"
+write_profile_search_log
 
 write_manifest() {
   {
@@ -735,6 +813,8 @@ write_manifest() {
     echo "DATA_PROC_RESULT_PATH=$DATA_PROC_RESULT_PATH"
     echo "OUTPUT_PATH=$RUN_DIR/$OUTPUT_NAME"
     echo "PROFILE_CANDIDATES_FILE=$PROFILE_CANDIDATES"
+    echo "PROFILE_CANDIDATES_ALL_FILE=$PROFILE_CANDIDATES_ALL"
+    echo "PROFILE_SEARCH_FILE=$PROFILE_SEARCH_LOG"
   } > "$MANIFEST"
 }
 

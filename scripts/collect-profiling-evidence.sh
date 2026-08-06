@@ -240,6 +240,23 @@ target_first_line() {
   target_grep "${basename}" "${archive}" "${pattern}" 1
 }
 
+target_probe_lines() {
+  local basename="$1"
+  local archive="$2"
+  local pattern="$3"
+  local max_lines="${4:-${MAX_FILE_LINES}}"
+
+  target_grep "${basename}" "${archive}" "${pattern}" "${max_lines}" | grep -Ev '^(###|[-dlcbps])' | sed -n "1,${max_lines}p" || true
+}
+
+target_probe_line() {
+  local basename="$1"
+  local archive="$2"
+  local pattern="$3"
+
+  target_probe_lines "${basename}" "${archive}" "${pattern}" "${MAX_FILE_LINES}" | sed -n '1p' || true
+}
+
 target_count() {
   local basename="$1"
   local archive="$2"
@@ -272,7 +289,7 @@ first_csv_member() {
   local archive="$1"
 
   [ -n "${archive}" ] || return 0
-  archive_matching_members "${archive}" '\.csv$|(^|/)csv/' 1
+  archive_matching_members "${archive}" '\.csv$' 1
 }
 
 emit_value() {
@@ -393,6 +410,13 @@ emit_kernel_report() {
   local profiling_disabled_count=""
   local profiling_config=""
   local data_proc_probe=""
+  local profile_search=""
+  local command_debug=""
+  local runner_help_debug=""
+  local data_proc_help_debug=""
+  local runner_debug=""
+  local files_after_debug=""
+  local hilog_debug=""
   local verdict="UNAVAILABLE"
   local reason=""
 
@@ -418,7 +442,19 @@ emit_kernel_report() {
   profiling_disabled_count="$(target_count "model_run_tool-run.log" "${archive}" 'Profiling is disabled')"
   profiling_config="$(target_first_line "model_run_tool-run.log" "${archive}" 'Profiling mode configStr')"
   profiling_config="${profiling_config#*configStr: }"
-  data_proc_probe="$(target_first_line "data_proc_tool-help.txt" "${archive}" 'ERROR|WARN|usage|help|profile|csv|result|path')"
+  data_proc_probe="$(target_probe_line "data_proc_tool-help.txt" "${archive}" 'ERROR|WARN')"
+  if [ -z "${data_proc_probe}" ]; then
+    data_proc_probe="$(target_probe_line "data_proc_tool-help.txt" "${archive}" 'usage|help|profile|csv|result')"
+  fi
+  profile_search="$(emit_target_file_content "profile-search.txt" "${archive}" 2>/dev/null || true)"
+  command_debug="$(emit_target_file_content "command.txt" "${archive}" 2>/dev/null || true)"
+  runner_help_debug="$(target_probe_lines "model_run_tool-help.txt" "${archive}" 'enable_item|profil|profile|times|output|result|path|csv|save|dump|trace|log|item' 40)"
+  data_proc_help_debug="$(target_probe_lines "data_proc_tool-help.txt" "${archive}" 'result_path|output_path|enable_item|profil|profile|times|output|result|path|csv|save|dump|trace|log|item|ERROR|WARN|Usage|usage' 40)"
+  runner_debug="$(target_grep "model_run_tool-run.log" "${archive}" 'ERROR|WARN|FAIL|failed|profil|profile|path|output|dump|trace|csv|exception|configStr' 40)"
+  files_after_debug="$(target_grep "files-after.txt" "${archive}" 'prof|profile|profiling|msprof|csv|json|trace|kernel|task|output_0|model_run|data_proc' 40)"
+  if [ -f "${RUN_DIR}/hilog.filtered.log" ]; then
+    hilog_debug="$(sed -n "1,${MAX_FILE_LINES}p" "${RUN_DIR}/hilog.filtered.log" 2>/dev/null || true)"
+  fi
 
   if [ -n "${profile_artifacts}" ]; then
     verdict="AVAILABLE"
@@ -470,6 +506,58 @@ emit_kernel_report() {
   else
     section "profile candidates"
     printf 'empty\n'
+  fi
+
+  if [ -z "${profile_artifacts}" ] && [ -n "${profile_search}" ]; then
+    section "profile search"
+    printf '%s\n' "${profile_search}" | sed -n "1,${MAX_FILE_LINES}p"
+  fi
+
+  if [ -z "${profile_artifacts}" ]; then
+    section "missing profile diagnostics"
+    printf 'These bounded sections are printed for paste-only debugging when artifact upload is unavailable.\n'
+
+    printf '\n-- command.txt --\n'
+    if [ -n "${command_debug}" ]; then
+      printf '%s\n' "${command_debug}" | sed -n '1,80p'
+    else
+      printf 'missing\n'
+    fi
+
+    printf '\n-- model_run_tool help/profile lines --\n'
+    if [ -n "${runner_help_debug}" ]; then
+      printf '%s\n' "${runner_help_debug}"
+    else
+      printf 'no matching lines\n'
+    fi
+
+    printf '\n-- data_proc_tool help/profile lines --\n'
+    if [ -n "${data_proc_help_debug}" ]; then
+      printf '%s\n' "${data_proc_help_debug}"
+    else
+      printf 'no matching lines\n'
+    fi
+
+    printf '\n-- model_run_tool run diagnostics --\n'
+    if [ -n "${runner_debug}" ]; then
+      printf '%s\n' "${runner_debug}"
+    else
+      printf 'no matching lines\n'
+    fi
+
+    printf '\n-- filtered hilog profiling/runtime lines --\n'
+    if [ -n "${hilog_debug}" ]; then
+      printf '%s\n' "${hilog_debug}"
+    else
+      printf 'missing or empty\n'
+    fi
+
+    printf '\n-- files-after profile/output hints --\n'
+    if [ -n "${files_after_debug}" ]; then
+      printf '%s\n' "${files_after_debug}"
+    else
+      printf 'no matching lines\n'
+    fi
   fi
 
   section "runner evidence"
