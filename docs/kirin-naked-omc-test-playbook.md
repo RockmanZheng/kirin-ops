@@ -289,13 +289,13 @@ hdc -t "$SN" file send \
 hdc -t "$SN" shell "rm -f /data/local/tmp/output_0"
 
 hdc -t "$SN" shell \
-  "/data/local/tmp/model_run_tool --model=/data/local/tmp/SobelCustom.omc --input=/data/local/tmp/x.bin --output_dir=/data/local/tmp/"
+  "/data/local/tmp/model_run_tool --model=/data/local/tmp/SobelCustom.omc --input=/data/local/tmp/x.bin --output_dir=/data/local/tmp/ --output_type=UINT8"
 
 hdc -t "$SN" shell "ls -lt /data/local/tmp/ | head -20"
 hdc -t "$SN" file recv /data/local/tmp/output_0 ./output_sobel.bin
 ```
 
-Kirin9030 SobelCustom 的输出契约是 `uint8`，shape `[1, 1, 761, 1022]`，有效 tensor 长度应为 `777742` bytes。若 `model_run_tool` 拉回的 `output_0` 比这个长度更大，不要直接用整文件 `cmp` 判断精度；用 Sobel 专用验证脚本确认有效前缀、尾部 dump 和数值误差。脚本依赖运行测试脚本的 prod host 有 `python3` 和 `numpy`：
+Kirin9030 SobelCustom 的输出契约是 `uint8`，shape `[1, 1, 761, 1022]`，完整输出长度必须正好是 `777742` bytes。`model_run_tool` 运行时必须传 `--output_type=UINT8`；若拉回的 `output_0` 比这个长度更大，按输出契约直接失败，不再把前缀当作通过结果。脚本依赖运行测试脚本的 prod host 有 `python3` 和 `numpy`：
 
 ```bash
 scripts/compare-sobel-output.py \
@@ -304,7 +304,7 @@ scripts/compare-sobel-output.py \
   --input /root/z84378291/kirin9030-sobel-custom-2026-08-04/x.bin
 ```
 
-如果脚本报告 `best_candidate=raw_uint8_prefix`、`dump_size_status=TRAILING_BYTES_PRESENT`、且 `decision=PASS_ACCURACY_THRESHOLD`，说明 Sobel 的有效 tensor 精度通过；剩余问题是 runner/tool 的输出 dump 多带了尾部字节。
+通过时脚本会报告 `output_size_status=EXACT_TENSOR_SIZE`、`comparison.output_vs_golden.passes_threshold=true`、`decision=PASS_ACCURACY_THRESHOLD`。若报告 `decision=FAIL_OUTPUT_SIZE_MISMATCH`，先确认 runner 命令里确实包含 `--output_type=UINT8`。
 
 `scripts/test-naked-omc-vetest.sh` 会在 `COMPARE=1` 且 bundle/OMC 名称包含 `sobel` 或 `soble` 时自动使用这个 Python/numpy 精度验证。也可以显式指定：
 
@@ -378,6 +378,7 @@ OMC          bundle 内的 .omc 文件名
 INPUT        一个输入文件，或逗号分隔的多个输入文件
 GOLDEN       可选；存在时做 compare
 OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
+OUTPUT_TYPE  可选；传给 model_run_tool 的输出 dtype，例如 Sobel 使用 UINT8
 TARGET_SOC   目标芯片断言，例如 kirin9030
 COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
 COMPARE_SCRIPT 可选；Python 精度验证脚本。Sobel bundle 默认用 scripts/compare-sobel-output.py
@@ -602,7 +603,7 @@ output_0 通过 Python 精度验证脚本
 summary.txt 里 result=PASS
 ```
 
-如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 Python 精度验证脚本通过，`PASS` 是更强确认。对 Kirin9030 SobelCustom 这类 `output_0` 可能包含尾部 dump 的情况，主测试脚本会通过 `scripts/compare-sobel-output.py` 判断有效 tensor 精度。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 Python 精度验证脚本通过，`PASS` 是更强确认。对 Kirin9030 SobelCustom，主测试脚本会传 `--output_type=UINT8` 并要求 `output_0` 精确匹配 Sobel uint8 tensor 大小；4x dump 这类输出大小不匹配会失败。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 交互终端里脚本会自动输出 ANSI 颜色，MobaXterm 会直接渲染：普通状态为青色，`WARN` 为黄色，`ERROR` 为红色，最终 `PASS` 为绿色。如果需要强制彩色输出，设置 `FORCE_COLOR=1` 或 `CLICOLOR_FORCE=1`；如果需要干净 copy/paste 日志，设置 `NO_COLOR=1`。
 

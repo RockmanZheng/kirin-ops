@@ -148,3 +148,41 @@ Fix: `scripts/target-profile-omc.sh` now auto-detects `--enable_item` and runs
 `model_run_tool` with `--enable_item=1`. It also runs the command from the run
 directory so tools that emit relative profiling folders are captured under the
 same evidence archive.
+
+## Strict UINT8 output contract follow-up
+
+Issue #4 later exposed that the real-device `output_0` could be exactly 4x the
+Sobel tensor byte count while the first tensor-sized span matched the numpy
+reference. That made the old candidate-format compare output too permissive and
+too confusing for the real contract.
+
+Decision:
+
+- The inference wrapper must request the expected output dtype from
+  `model_run_tool`, using `--output_type=UINT8` for Sobel/Soble bundles.
+- `bundle.env` may now carry `OUTPUT_TYPE`; the host test wrapper and profiling
+  wrapper both read it.
+- `scripts/compare-sobel-output.py` is the precision contract. It checks exactly
+  one output representation: `uint8` shape `[1, 1, 761, 1022]`, expected size
+  `777742` bytes.
+- Any pulled output whose file size is not exactly `777742` bytes now fails with
+  `decision=FAIL_OUTPUT_SIZE_MISMATCH`; the script no longer reports
+  `best_candidate`, `raw_uint8_prefix`, `stride4`, `uint32`, or `float32`
+  alternatives.
+- A passing run should show `output_size_status=EXACT_TENSOR_SIZE`,
+  `comparison.output_vs_golden.passes_threshold=true`, and
+  `decision=PASS_ACCURACY_THRESHOLD`.
+
+Validation:
+
+- `bash -n` passed for the host wrappers and bundle packager.
+- `sh -n` passed for `scripts/target-profile-omc.sh`.
+- `python3 -m py_compile scripts/compare-sobel-output.py` passed.
+- `shellcheck` passed for the shell scripts.
+- A npu-group-3 numpy fixture proved strict compare behavior:
+  exact-size output with max diff 1 returns `decision=PASS_ACCURACY_THRESHOLD`;
+  exact-size output with max diff 6 returns `decision=FAIL_ACCURACY_THRESHOLD`;
+  4x output returns `decision=FAIL_OUTPUT_SIZE_MISMATCH`.
+- Dry-runs proved Sobel bundles resolve `OUTPUT_TYPE=UINT8`, profiling passes
+  `--output-type 'UINT8'` to the target helper, and the target helper runs
+  `model_run_tool` with `--output_type=UINT8`.

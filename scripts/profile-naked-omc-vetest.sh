@@ -15,6 +15,7 @@ BUNDLE_OMC=""
 BUNDLE_INPUT=""
 BUNDLE_GOLDEN=""
 BUNDLE_OUTPUT_NAME=""
+BUNDLE_OUTPUT_TYPE=""
 BUNDLE_TARGET_SOC=""
 BUNDLE_COMPARE=""
 BUNDLE_COMPARE_SCRIPT=""
@@ -23,6 +24,7 @@ INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
 COMPARE_SCRIPT="${COMPARE_SCRIPT:-}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
+OUTPUT_TYPE="${OUTPUT_TYPE:-}"
 TARGET="${TARGET:-}"
 TARGET_SOC="${TARGET_SOC:-}"
 DEVICE_DIR="${DEVICE_DIR:-/data/local/tmp/z84378291}"
@@ -47,6 +49,7 @@ OMC_EXPLICIT=0
 INPUT_EXPLICIT=0
 GOLDEN_EXPLICIT=0
 OUTPUT_NAME_EXPLICIT=0
+OUTPUT_TYPE_EXPLICIT=0
 TARGET_SOC_EXPLICIT=0
 
 usage() {
@@ -71,6 +74,8 @@ Options:
   --input PATHS          Local input .bin path, or comma-separated local input paths.
   --golden PATH          Optional local golden output file.
   --output-name NAME     Target output name. Default: output_0.
+  --output-type TYPE     Target output tensor dtype passed to model_run_tool.
+                         Sobel/Soble bundles default to UINT8.
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
   --target-soc SOC       Expected target SoC, e.g. Kirin9020 or Kirin9030.
                          Used as a device-side assertion before profiling.
@@ -373,6 +378,9 @@ load_bundle_manifest() {
       OUTPUT_NAME|OUTPUT)
         BUNDLE_OUTPUT_NAME="${value}"
         ;;
+      OUTPUT_TYPE|OUTPUT_DTYPE|MODEL_OUTPUT_TYPE)
+        BUNDLE_OUTPUT_TYPE="${value}"
+        ;;
       TARGET_SOC|SOC|SOC_VERSION)
         BUNDLE_TARGET_SOC="${value}"
         ;;
@@ -463,6 +471,12 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--output-name requires a name"
       OUTPUT_NAME="$2"
       OUTPUT_NAME_EXPLICIT=1
+      shift 2
+      ;;
+    --output-type)
+      [ "$#" -ge 2 ] || die "--output-type requires a dtype"
+      OUTPUT_TYPE="$2"
+      OUTPUT_TYPE_EXPLICIT=1
       shift 2
       ;;
     --target)
@@ -647,6 +661,10 @@ if [ "${OUTPUT_NAME_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_OUTPUT_NAME}" ]; then
   OUTPUT_NAME="${BUNDLE_OUTPUT_NAME}"
 fi
 
+if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_OUTPUT_TYPE}" ]; then
+  OUTPUT_TYPE="${BUNDLE_OUTPUT_TYPE}"
+fi
+
 if [ "${TARGET_SOC_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_TARGET_SOC}" ]; then
   TARGET_SOC="${BUNDLE_TARGET_SOC}"
 fi
@@ -670,6 +688,9 @@ if [ "${COMPARE_SCRIPT_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_SCRIPT}" ]; 
 fi
 
 resolve_compare_script
+if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -z "${OUTPUT_TYPE}" ] && is_sobel_precision_candidate; then
+  OUTPUT_TYPE="UINT8"
+fi
 
 [ -n "${OMC}" ] || die "OMC not provided and not found in bundle"
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC}"
@@ -757,6 +778,9 @@ for input_file in "${INPUT_FILES[@]}"; do
 done
 
 TARGET_CMD="sh $(remote_quote "${REMOTE_SCRIPT}") --omc $(remote_quote "${REMOTE_OMC}") --input $(remote_quote "${REMOTE_INPUTS}") --work-dir $(remote_quote "${REMOTE_RUN_ROOT}") --model-run-tool $(remote_quote "${MODEL_RUN_TOOL}") --data-proc-tool $(remote_quote "${DATA_PROC_TOOL}") --output-name $(remote_quote "${OUTPUT_NAME}") --times $(remote_quote "${TIMES}") --profile-mode $(remote_quote "${PROFILE_MODE}") --profile-dir $(remote_quote "${PROFILE_DIR}") --run-id $(remote_quote "${RUN_ID}")"
+if [ -n "${OUTPUT_TYPE}" ]; then
+  TARGET_CMD="${TARGET_CMD} --output-type $(remote_quote "${OUTPUT_TYPE}")"
+fi
 if [ -n "${TARGET_SOC}" ]; then
   TARGET_CMD="${TARGET_CMD} --target-soc $(remote_quote "${TARGET_SOC}")"
 fi
@@ -786,6 +810,7 @@ fi
   printf 'INPUT="%s"\n' "$(manifest_value "${INPUT}")"
   printf 'GOLDEN="%s"\n' "$(manifest_value "${GOLDEN}")"
   printf 'OUTPUT_NAME="%s"\n' "$(manifest_value "${OUTPUT_NAME}")"
+  printf 'OUTPUT_TYPE="%s"\n' "$(manifest_value "${OUTPUT_TYPE}")"
   printf 'DEVICE_DIR="%s"\n' "$(manifest_value "${DEVICE_DIR}")"
   printf 'REMOTE_RUN_ROOT="%s"\n' "$(manifest_value "${REMOTE_RUN_ROOT}")"
   printf 'REMOTE_INPUT_DIR="%s"\n' "$(manifest_value "${REMOTE_INPUT_DIR}")"
@@ -833,6 +858,8 @@ DATA_PROC_TOOL=${DATA_PROC_TOOL}
 OMC=${OMC}
 INPUT=${INPUT}
 GOLDEN=${GOLDEN:-<none>}
+OUTPUT_NAME=${OUTPUT_NAME}
+OUTPUT_TYPE=${OUTPUT_TYPE:-<none>}
 COMPARE=${COMPARE}
 COMPARE_SCRIPT=${COMPARE_SCRIPT:-<auto/none>}
 HILOG_CLEAR=${HILOG_CLEAR}

@@ -94,12 +94,12 @@ This means the 910B2 build/conversion/execution/accuracy toolchain is passing.
 Accuracy summary from `compare.log`:
 
 ```text
-best_candidate=raw_uint8_full
-candidate.raw_uint8_full.passes_threshold=true
-candidate.raw_uint8_full.max_abs_diff=1
-candidate.raw_uint8_full.mean_abs_diff=0.072360757
-candidate.raw_uint8_full.nonzero_diff_count=56278
-candidate.raw_uint8_full.nonzero_diff_rate=0.072360757
+output_size_status=EXACT_TENSOR_SIZE
+comparison.output_vs_golden.passes_threshold=true
+comparison.output_vs_golden.max_abs_diff=1
+comparison.output_vs_golden.mean_abs_diff=0.072360757
+comparison.output_vs_golden.nonzero_diff_count=56278
+comparison.output_vs_golden.nonzero_diff_rate=0.072360757
 ```
 
 The device output now matches the numpy half-op reference exactly:
@@ -113,8 +113,8 @@ The remaining `max_abs_diff=1` mismatch versus OpenCV `y.bin` is the known
 half-precision arithmetic difference:
 
 ```text
-candidate.npu_half_clipped_vs_golden.max_abs_diff=1
-candidate.npu_half_clipped_vs_golden.nonzero_diff_rate=0.072360757
+comparison.npu_half_clipped_vs_golden.max_abs_diff=1
+comparison.npu_half_clipped_vs_golden.nonzero_diff_rate=0.072360757
 ```
 
 The earlier failing smoke artifact was:
@@ -123,7 +123,7 @@ The earlier failing smoke artifact was:
 remote: /data1/z84378291/artifacts/sobel910b2_toolchain_smoke_20260804_05
 local:  artifacts/remote-pulled/sobel910b2-toolchain-smoke-20260804
 compare_status=1
-candidate.raw_uint8_full.max_abs_diff=250
+comparison.output_vs_golden.max_abs_diff=250
 ```
 
 Its row-mod pattern pointed at the tiled kernel path, not at the output file

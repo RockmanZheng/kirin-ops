@@ -24,6 +24,7 @@ WORK_DIR="${WORK_DIR:-/data/local/tmp/kirin-profile-runs}"
 OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
+OUTPUT_TYPE="${OUTPUT_TYPE:-}"
 TARGET_SOC="${TARGET_SOC:-}"
 TIMES="${TIMES:-50}"
 PROFILE_MODE="${PROFILE_MODE:-auto}"
@@ -69,6 +70,8 @@ Options:
                           Default: /data/local/tmp/data_proc_tool
   --output-name NAME      Output file expected from model_run_tool.
                           Default: output_0
+  --output-type TYPE      Explicit model_run_tool output tensor dtype, for
+                          example UINT8. Passed as --output_type=TYPE.
   --target-soc SOC        Expected target SoC, e.g. Kirin9020 or Kirin9030.
                           Fails if target params expose a different Kirin SoC.
   --times N               Profiling inference count when supported.
@@ -392,6 +395,11 @@ while [ "$#" -gt 0 ]; do
       OUTPUT_NAME="$2"
       shift 2
       ;;
+    --output-type)
+      [ "$#" -ge 2 ] || die "--output-type requires a value"
+      OUTPUT_TYPE="$2"
+      shift 2
+      ;;
     --target-soc)
       [ "$#" -ge 2 ] || die "--target-soc requires a SoC value"
       TARGET_SOC="$2"
@@ -585,6 +593,9 @@ fi
 } > "$FILES_BEFORE"
 
 set -- "$MODEL_RUN_TOOL" "--model=$OMC" "--input=$INPUT_ABS" "--output_dir=$RUN_DIR/"
+if [ -n "$OUTPUT_TYPE" ]; then
+  set -- "$@" "--output_type=$OUTPUT_TYPE"
+fi
 if [ -n "$DETECTED_PROFILING_ARG" ]; then
   set -- "$@" "$DETECTED_PROFILING_ARG"
 fi
@@ -611,6 +622,7 @@ fi
   echo "input=$INPUT_ABS"
   echo "output_dir=$RUN_DIR/"
   echo "output_name=$OUTPUT_NAME"
+  echo "output_type=$OUTPUT_TYPE"
   echo "target_soc=$TARGET_SOC"
   echo "target_soc_normalized=$TARGET_SOC_NORMALIZED"
   echo "soc_check_result=$SOC_CHECK_RESULT"
@@ -697,6 +709,7 @@ write_manifest() {
     echo "OMC=$OMC"
     echo "INPUT=$INPUT_ABS"
     echo "OUTPUT_NAME=$OUTPUT_NAME"
+    echo "OUTPUT_TYPE=$OUTPUT_TYPE"
     echo "TARGET_SOC=$TARGET_SOC"
     echo "TARGET_SOC_NORMALIZED=$TARGET_SOC_NORMALIZED"
     echo "SOC_CHECK_RESULT=$SOC_CHECK_RESULT"
