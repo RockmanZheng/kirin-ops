@@ -205,3 +205,39 @@ Current contract:
   `--compare-script`.
 - A Sobel bundle is responsible for declaring `OUTPUT_TYPE=UINT8` and
   `COMPARE_SCRIPT=compare-sobel-output.py` if it wants strict Sobel validation.
+
+## Sobel bundle metadata artifact refresh
+
+Audit result: the local Kirin9030 Sobel bundle directories had been updated to
+the metadata-driven contract, but the release zip assets were still old. The old
+zip manifests only had `OUTPUT_NAME=output_0` and `COMPARE=1`; they did not
+carry `OUTPUT_TYPE=UINT8`, `COMPARE_SCRIPT=compare-sobel-output.py`, or the
+Python validator file.
+
+Fix applied:
+
+- Added `OUTPUT_TYPE="UINT8"` to each Kirin9030 Sobel `bundle.env`.
+- Added `COMPARE_SCRIPT="compare-sobel-output.py"` to each Kirin9030 Sobel
+  `bundle.env`.
+- Copied `scripts/compare-sobel-output.py` into each bundle directory.
+- Refreshed `README.txt`, `SHA256SUMS`, release `.zip`, and `.zip.sha256` for:
+  `kirin9030-sobel-custom-2026-08-04`,
+  `kirin9030-sobel-custom-clamped-2026-08-04`,
+  `kirin9030-sobel-custom-tilefix-2026-08-04`, and
+  `kirin9030-sobel-custom-vector-fix-2026-08-04`.
+- Uploaded the refreshed zip assets with `gh release upload --clobber` using the
+  `RockmanZheng` GitHub account.
+
+Validation:
+
+- `shasum -a 256 -c SHA256SUMS` passed in all four bundle directories.
+- `unzip -p <release.zip> <bundle>/bundle.env` shows `OUTPUT_TYPE=UINT8`,
+  `COMPARE=1`, and `COMPARE_SCRIPT=compare-sobel-output.py`.
+- `unzip -l <release.zip>` shows `compare-sobel-output.py`, `bundle.env`, and
+  `SHA256SUMS`.
+- Host test wrapper dry-run and profiling wrapper dry-run both resolve
+  `OUTPUT_TYPE=UINT8` and the bundle-local `compare-sobel-output.py` without
+  command-line overrides.
+- GitHub release asset timestamps after upload:
+  `2026-08-06T02:26:51Z`, `2026-08-06T02:26:56Z`,
+  `2026-08-06T02:27:00Z`, and `2026-08-06T02:27:06Z`.
