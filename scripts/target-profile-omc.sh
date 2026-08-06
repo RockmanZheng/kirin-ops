@@ -381,6 +381,118 @@ write_new_profile_candidates() {
   ' "$before_file" "$after_file" > "$out_file" 2>/dev/null || : > "$out_file"
 }
 
+write_profile_candidate_snapshot() {
+  candidates_file="$1"
+  out_file="$2"
+
+  {
+    if [ -s "$candidates_file" ]; then
+      while IFS= read -r candidate_dir; do
+        [ -n "$candidate_dir" ] || continue
+        [ -d "$candidate_dir" ] || continue
+
+        echo "###PROFILE_CANDIDATE_BEGIN $candidate_dir"
+        ls -ld "$candidate_dir" 2>&1 || true
+        if command_exists find; then
+          find "$candidate_dir" -maxdepth 5 -print 2>/dev/null | sort | sed -n '1,360p' | while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            ls -ld "$entry" 2>&1 || true
+            if [ -f "$entry" ]; then
+              printf 'size='
+              file_size "$entry" 2>/dev/null || true
+            fi
+          done
+        else
+          # shellcheck disable=SC2012
+          ls -lR "$candidate_dir" 2>&1 | sed -n '1,360p' || true
+        fi
+        echo "###PROFILE_CANDIDATE_END $candidate_dir"
+        echo
+      done < "$candidates_file"
+    fi
+  } > "$out_file" 2>&1
+}
+
+extract_profile_candidate_snapshot() {
+  candidate_dir="$1"
+  snapshot_file="$2"
+
+  awk -v candidate_dir="$candidate_dir" '
+    $0 == "###PROFILE_CANDIDATE_BEGIN " candidate_dir {
+      emit = 1
+      next
+    }
+    $0 == "###PROFILE_CANDIDATE_END " candidate_dir {
+      emit = 0
+      exit
+    }
+    emit {
+      print
+    }
+  ' "$snapshot_file" 2>/dev/null || true
+}
+
+files_same() {
+  left="$1"
+  right="$2"
+
+  if command_exists cmp; then
+    cmp -s "$left" "$right"
+    return $?
+  fi
+  if command_exists diff; then
+    diff "$left" "$right" >/dev/null 2>&1
+    return $?
+  fi
+  if command_exists cksum; then
+    [ "$(cksum < "$left" 2>/dev/null || true)" = "$(cksum < "$right" 2>/dev/null || true)" ]
+    return $?
+  fi
+
+  return 1
+}
+
+write_changed_profile_candidates() {
+  before_candidates_file="$1"
+  after_candidates_file="$2"
+  before_snapshot_file="$3"
+  after_snapshot_file="$4"
+  out_file="$5"
+  before_one="$RUN_DIR/.candidate-before.snapshot"
+  after_one="$RUN_DIR/.candidate-after.snapshot"
+
+  : > "$out_file"
+  [ -s "$after_candidates_file" ] || return 0
+
+  while IFS= read -r candidate_dir; do
+    [ -n "$candidate_dir" ] || continue
+    [ -d "$candidate_dir" ] || continue
+    grep -Fx "$candidate_dir" "$before_candidates_file" >/dev/null 2>&1 || continue
+
+    extract_profile_candidate_snapshot "$candidate_dir" "$before_snapshot_file" > "$before_one"
+    extract_profile_candidate_snapshot "$candidate_dir" "$after_snapshot_file" > "$after_one"
+    [ -s "$after_one" ] || continue
+
+    if ! files_same "$before_one" "$after_one"; then
+      printf '%s\n' "$candidate_dir" >> "$out_file"
+    fi
+  done < "$after_candidates_file"
+
+  rm -f "$before_one" "$after_one" 2>/dev/null || true
+  awk 'NF && !seen[$0]++' "$out_file" > "$out_file.tmp" 2>/dev/null && mv "$out_file.tmp" "$out_file"
+}
+
+merge_profile_candidates() {
+  out_file="$1"
+  shift
+
+  : > "$out_file"
+  for candidate_file in "$@"; do
+    [ -f "$candidate_file" ] || continue
+    cat "$candidate_file"
+  done | awk 'NF && !seen[$0]++' > "$out_file"
+}
+
 write_profile_search_log() {
   {
     echo "### search roots"
@@ -401,12 +513,82 @@ write_profile_search_log() {
     fi
     echo
     echo "### new candidate dirs"
+    if [ -s "$PROFILE_CANDIDATES_NEW" ]; then
+      sed -n '1,80p' "$PROFILE_CANDIDATES_NEW"
+    else
+      echo "empty"
+    fi
+    echo
+    echo "### changed/reused candidate dirs"
+    if [ -s "$PROFILE_CANDIDATES_CHANGED" ]; then
+      sed -n '1,80p' "$PROFILE_CANDIDATES_CHANGED"
+    else
+      echo "empty"
+    fi
+    echo
+    echo "### selected candidate dirs for data_proc_tool"
     if [ -s "$PROFILE_CANDIDATES" ]; then
       sed -n '1,80p' "$PROFILE_CANDIDATES"
     else
       echo "empty"
     fi
+    echo
+    echo "### latest candidate snapshot"
+    if [ -s "$PROFILE_CANDIDATE_SNAPSHOT_AFTER" ]; then
+      sed -n '1,120p' "$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
+    else
+      echo "empty"
+    fi
   } > "$PROFILE_SEARCH_LOG" 2>&1
+}
+
+run_data_proc_tool() {
+  result_path="$1"
+  status=0
+
+  : > "$DATA_PROC_LOG"
+  if contains_text '\-\-output_path' "$DATA_PROC_HELP"; then
+    {
+      echo "### data_proc_tool with explicit output_path"
+      echo "result_path=$result_path"
+      echo "output_path=$RUN_DIR/csv"
+    } >> "$DATA_PROC_LOG"
+    (
+      cd "$RUN_DIR" || exit 1
+      "$DATA_PROC_TOOL" "--result_path=$result_path" "--output_path=$RUN_DIR/csv"
+    ) >> "$DATA_PROC_LOG" 2>&1
+    return $?
+  fi
+
+  {
+    echo "### data_proc_tool with explicit output_path"
+    echo "result_path=$result_path"
+    echo "output_path=$RUN_DIR/csv"
+    echo "note=data_proc_tool help did not confirm --output_path; trying it first so output stays inside this run directory"
+  } >> "$DATA_PROC_LOG"
+  (
+    cd "$RUN_DIR" || exit 1
+    "$DATA_PROC_TOOL" "--result_path=$result_path" "--output_path=$RUN_DIR/csv"
+  ) >> "$DATA_PROC_LOG" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    return 0
+  fi
+  if grep -Ei 'another instance|run later' "$DATA_PROC_LOG" >/dev/null 2>&1; then
+    return "$status"
+  fi
+
+  {
+    echo
+    echo "### fallback: data_proc_tool without output_path"
+    echo "result_path=$result_path"
+    echo "cwd=$RUN_DIR"
+  } >> "$DATA_PROC_LOG"
+  (
+    cd "$RUN_DIR" || exit 1
+    "$DATA_PROC_TOOL" "--result_path=$result_path"
+  ) >> "$DATA_PROC_LOG" 2>&1
+  return $?
 }
 
 archive_run_dir() {
@@ -577,7 +759,11 @@ FILES_AFTER="$RUN_DIR/files-after.txt"
 HASHES="$RUN_DIR/hashes.txt"
 PROFILE_CANDIDATES_BEFORE="$RUN_DIR/profile-candidates-before.txt"
 PROFILE_CANDIDATES_ALL="$RUN_DIR/profile-candidates-all.txt"
+PROFILE_CANDIDATES_NEW="$RUN_DIR/profile-candidates-new.txt"
+PROFILE_CANDIDATES_CHANGED="$RUN_DIR/profile-candidates-changed.txt"
 PROFILE_CANDIDATES="$RUN_DIR/profile-candidates.txt"
+PROFILE_CANDIDATE_SNAPSHOT_BEFORE="$RUN_DIR/profile-candidate-snapshot-before.txt"
+PROFILE_CANDIDATE_SNAPSHOT_AFTER="$RUN_DIR/profile-candidate-snapshot-after.txt"
 PROFILE_SEARCH_LOG="$RUN_DIR/profile-search.txt"
 INPUT_LIST="$RUN_DIR/input-list.txt"
 INPUT_ABS_LIST="$RUN_DIR/input-absolute-list.txt"
@@ -665,6 +851,7 @@ if [ "$CLEAN" -eq 1 ]; then
 fi
 
 find_profile_candidates > "$PROFILE_CANDIDATES_BEFORE"
+write_profile_candidate_snapshot "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATE_SNAPSHOT_BEFORE"
 
 {
   echo "### run dir before model_run_tool"
@@ -758,7 +945,10 @@ while IFS= read -r input_path; do
 done < "$INPUT_ABS_LIST"
 
 find_profile_candidates > "$PROFILE_CANDIDATES_ALL"
-write_new_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATES"
+write_profile_candidate_snapshot "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
+write_new_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATES_NEW"
+write_changed_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATE_SNAPSHOT_BEFORE" "$PROFILE_CANDIDATE_SNAPSHOT_AFTER" "$PROFILE_CANDIDATES_CHANGED"
+merge_profile_candidates "$PROFILE_CANDIDATES" "$PROFILE_CANDIDATES_NEW" "$PROFILE_CANDIDATES_CHANGED"
 write_profile_search_log
 
 DATA_PROC_STATUS="SKIPPED"
@@ -771,22 +961,18 @@ if [ "$RUN_DATA_PROC" -eq 1 ]; then
     warn "data_proc_tool is not executable; raw profiling data, if generated, remains in $RUN_DIR"
     DATA_PROC_STATUS="NOT_EXECUTABLE"
   elif [ ! -s "$PROFILE_CANDIDATES" ]; then
-    warn "no profile candidate directory found under $RUN_DIR before data_proc_tool"
+    warn "no new or changed profile candidate directory found before data_proc_tool"
     DATA_PROC_STATUS="NO_PROFILE_DIR"
   else
     DATA_PROC_RESULT_PATH="$(sed -n '1p' "$PROFILE_CANDIDATES")"
     log "running data_proc_tool on $DATA_PROC_RESULT_PATH"
-    if contains_text '\-\-output_path' "$DATA_PROC_HELP"; then
-      "$DATA_PROC_TOOL" "--result_path=$DATA_PROC_RESULT_PATH" "--output_path=$RUN_DIR/csv" > "$DATA_PROC_LOG" 2>&1
-    else
-      "$DATA_PROC_TOOL" "--result_path=$DATA_PROC_RESULT_PATH" > "$DATA_PROC_LOG" 2>&1
-    fi
+    run_data_proc_tool "$DATA_PROC_RESULT_PATH"
     DATA_PROC_STATUS=$?
   fi
 fi
 
 find_profile_candidates > "$PROFILE_CANDIDATES_ALL"
-write_new_profile_candidates "$PROFILE_CANDIDATES_BEFORE" "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATES"
+write_profile_candidate_snapshot "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
 write_profile_search_log
 
 write_manifest() {
@@ -814,6 +1000,10 @@ write_manifest() {
     echo "OUTPUT_PATH=$RUN_DIR/$OUTPUT_NAME"
     echo "PROFILE_CANDIDATES_FILE=$PROFILE_CANDIDATES"
     echo "PROFILE_CANDIDATES_ALL_FILE=$PROFILE_CANDIDATES_ALL"
+    echo "PROFILE_CANDIDATES_NEW_FILE=$PROFILE_CANDIDATES_NEW"
+    echo "PROFILE_CANDIDATES_CHANGED_FILE=$PROFILE_CANDIDATES_CHANGED"
+    echo "PROFILE_CANDIDATE_SNAPSHOT_BEFORE_FILE=$PROFILE_CANDIDATE_SNAPSHOT_BEFORE"
+    echo "PROFILE_CANDIDATE_SNAPSHOT_AFTER_FILE=$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
     echo "PROFILE_SEARCH_FILE=$PROFILE_SEARCH_LOG"
   } > "$MANIFEST"
 }

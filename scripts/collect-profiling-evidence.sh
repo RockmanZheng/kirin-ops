@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEFAULT_HILOG_SIGNAL_RE='profil|profile|hiai|npu|nnrt|model_run|data_proc|cann|aicore|acl|graphengine|(^|[^[:alnum:]_])ge([^[:alnum:]_]|$)'
 
 RUN_DIR=""
 RUN_ID=""
@@ -453,12 +454,14 @@ emit_kernel_report() {
   runner_debug="$(target_grep "model_run_tool-run.log" "${archive}" 'ERROR|WARN|FAIL|failed|profil|profile|path|output|dump|trace|csv|exception|configStr' 40)"
   files_after_debug="$(target_grep "files-after.txt" "${archive}" 'prof|profile|profiling|msprof|csv|json|trace|kernel|task|output_0|model_run|data_proc' 40)"
   if [ -f "${RUN_DIR}/hilog.filtered.log" ]; then
-    hilog_debug="$(sed -n "1,${MAX_FILE_LINES}p" "${RUN_DIR}/hilog.filtered.log" 2>/dev/null || true)"
+    hilog_debug="$(grep -Ei "${DEFAULT_HILOG_SIGNAL_RE}" "${RUN_DIR}/hilog.filtered.log" 2>/dev/null | sed -n "1,${MAX_FILE_LINES}p" || true)"
   fi
 
   if [ -n "${profile_artifacts}" ]; then
     verdict="AVAILABLE"
     reason="candidate profiling artifact files are present; inspect the listed CSV/profile files"
+  elif [ "${data_proc_status}" = "NO_PROFILE_DIR" ] && [ "${profiling_enabled_count}" != "0" ] && printf '%s\n' "${profile_search}" | grep -Eq 'candidate dirs after model_run_tool|candidate dirs before model_run_tool'; then
+    reason="profiling was enabled, but no new or changed raw profiling directory was selected for data_proc_tool"
   elif [ "${data_proc_status}" = "NO_PROFILE_DIR" ]; then
     reason="data_proc_tool was not run because no raw profiling directory was found"
   elif [ -z "${data_proc_status}" ]; then
