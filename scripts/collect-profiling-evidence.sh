@@ -310,6 +310,39 @@ first_csv_member() {
   printf '%s\n' "${csv_members}" | sed -n '1p'
 }
 
+csv_first_column_value() {
+  local archive="$1"
+  local member="$2"
+
+  [ -n "${archive}" ] || return 0
+  [ -n "${member}" ] || return 0
+  archive_extract "${archive}" "${member}" 2>/dev/null | awk -F, '
+    NR == 2 {
+      value = $1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' || true
+}
+
+model_name_from_profiling_config() {
+  printf '%s\n' "$1" | sed -n 's/.*model_names=\([^:]*\).*/\1/p' | sed -n '1p'
+}
+
+normalize_data_proc_lines() {
+  awk '
+    /unknown command line flag.*output_path|unknown.*output_path|invalid.*output_path|unrecognized.*output_path/ {
+      if (!unsupported_output_path++) {
+        print "output_path_probe_status=UNSUPPORTED_BY_TOOL"
+        print "output_path_probe_action=fallback to --result_path only"
+      }
+      next
+    }
+    { print }
+  '
+}
+
 emit_value() {
   local key="$1"
   local value="${2:-}"
@@ -331,6 +364,30 @@ emit_kernel_csv_preview() {
   section "kernel csv preview"
   printf 'source=%s\n' "${csv_member}"
   archive_extract "${archive}" "${csv_member}" 2>/dev/null | sed -n "1,${MAX_FILE_LINES}p" || true
+}
+
+emit_operator_name_note() {
+  local archive="$1"
+  local profiling_config="$2"
+  local csv_member=""
+  local first_label=""
+  local model_identity=""
+
+  csv_member="$(first_csv_member "${archive}")"
+  [ -n "${csv_member}" ] || return 0
+  first_label="$(csv_first_column_value "${archive}" "${csv_member}")"
+  model_identity="$(model_name_from_profiling_config "${profiling_config}")"
+
+  [ -n "${first_label}" ] || return 0
+  case "${first_label}" in
+    DefaultOpName*)
+      section "operator naming note"
+      emit_value "model_identity" "${model_identity}"
+      emit_value "op_csv" "${csv_member}"
+      emit_value "op_csv_row_label" "${first_label}"
+      printf 'interpretation=the row label appears to be the target profiler/runtime task name, not the source custom-op symbol; correlate this run by model_identity and the SobelCustom CSV filename.\n'
+      ;;
+  esac
 }
 
 emit_key_fields() {
@@ -465,6 +522,9 @@ emit_kernel_report() {
   data_proc_probe="$(target_probe_line "data_proc_tool-help.txt" "${archive}" 'ERROR|WARN')"
   if [ -z "${data_proc_probe}" ]; then
     data_proc_probe="$(target_probe_line "data_proc_tool-help.txt" "${archive}" 'usage|help|profile|csv|result')"
+  fi
+  if printf '%s\n' "${data_proc_probe}" | grep -Eiq 'another instance|run later'; then
+    data_proc_probe="help_probe_unavailable_or_busy; actual_data_proc_status=${data_proc_status}"
   fi
   profile_artifacts_log="$(emit_target_file_content "profile-artifacts.txt" "${archive}" 2>/dev/null || true)"
   profile_search="$(emit_target_file_content "profile-search.txt" "${archive}" 2>/dev/null || true)"
@@ -602,7 +662,7 @@ emit_kernel_report() {
 
   section "data_proc evidence"
   if emit_target_file_content "data_proc_tool-run.log" "${archive}" >/dev/null 2>&1; then
-    target_grep "data_proc_tool-run.log" "${archive}" 'ERROR|WARN|profil|profile|csv|result|path|elapsed|kernel|task' "${MAX_FILE_LINES}"
+    target_grep "data_proc_tool-run.log" "${archive}" 'ERROR|WARN|profil|profile|csv|result|path|elapsed|kernel|task|probe|fallback|client file' "${MAX_FILE_LINES}" | normalize_data_proc_lines
   else
     printf 'data_proc_tool-run.log=missing\n'
   fi
@@ -613,6 +673,7 @@ emit_kernel_report() {
   fi
 
   emit_kernel_csv_preview "${archive}"
+  emit_operator_name_note "${archive}" "${profiling_config}"
 
   section "next action"
   if [ "${verdict}" = "AVAILABLE" ]; then

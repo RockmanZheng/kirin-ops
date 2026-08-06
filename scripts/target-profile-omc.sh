@@ -607,11 +607,12 @@ write_profile_search_log() {
 run_data_proc_tool() {
   result_path="$1"
   status=0
+  output_path_probe_log="$RUN_DIR/data_proc_tool-output-path-probe.log"
 
   : > "$DATA_PROC_LOG"
   if contains_text '\-\-output_path' "$DATA_PROC_HELP"; then
     {
-      echo "### data_proc_tool with explicit output_path"
+      echo "### data_proc_tool with help-declared output_path"
       echo "result_path=$result_path"
       echo "output_path=$RUN_DIR/csv"
     } >> "$DATA_PROC_LOG"
@@ -623,21 +624,32 @@ run_data_proc_tool() {
   fi
 
   {
-    echo "### data_proc_tool with explicit output_path"
+    echo "### data_proc_tool output_path compatibility probe"
     echo "result_path=$result_path"
     echo "output_path=$RUN_DIR/csv"
-    echo "note=data_proc_tool help did not confirm --output_path; trying it first so output stays inside this run directory"
+    echo "note=optional probe; unsupported --output_path is expected on some target data_proc_tool builds"
   } >> "$DATA_PROC_LOG"
   (
     cd "$RUN_DIR" || exit 1
     "$DATA_PROC_TOOL" "--result_path=$result_path" "--output_path=$RUN_DIR/csv"
-  ) >> "$DATA_PROC_LOG" 2>&1
+  ) > "$output_path_probe_log" 2>&1
   status=$?
   if [ "$status" -eq 0 ]; then
+    echo "output_path_probe_status=SUPPORTED" >> "$DATA_PROC_LOG"
+    sed -n '1,120p' "$output_path_probe_log" >> "$DATA_PROC_LOG"
     return 0
   fi
-  if grep -Ei 'another instance|run later' "$DATA_PROC_LOG" >/dev/null 2>&1; then
+  if grep -Ei 'another instance|run later' "$output_path_probe_log" >/dev/null 2>&1; then
+    echo "output_path_probe_status=FAILED_BUSY_OR_LOCKED" >> "$DATA_PROC_LOG"
+    sed -n '1,120p' "$output_path_probe_log" >> "$DATA_PROC_LOG"
     return "$status"
+  fi
+  if grep -Ei 'unknown command line flag.*output_path|unknown.*output_path|invalid.*output_path|unrecognized.*output_path' "$output_path_probe_log" >/dev/null 2>&1; then
+    echo "output_path_probe_status=UNSUPPORTED_BY_TOOL" >> "$DATA_PROC_LOG"
+    echo "output_path_probe_action=fall back to --result_path only" >> "$DATA_PROC_LOG"
+  else
+    echo "output_path_probe_status=FAILED_STATUS_$status" >> "$DATA_PROC_LOG"
+    sed -n '1,120p' "$output_path_probe_log" | sed 's/^/output_path_probe_output: /' >> "$DATA_PROC_LOG"
   fi
 
   {
