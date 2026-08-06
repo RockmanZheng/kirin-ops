@@ -35,6 +35,7 @@ RUN_ID="${RUN_ID:-}"
 CLEAN=1
 RUN_DATA_PROC=1
 ARCHIVE=1
+CHECK_SOC=1
 DRY_RUN=0
 
 log() {
@@ -74,6 +75,9 @@ Options:
                           example UINT8. Passed as --output_type=TYPE.
   --target-soc SOC        Expected target SoC, e.g. Kirin9020 or Kirin9030.
                           Fails if target params expose a different Kirin SoC.
+  --skip-soc-check        Do not assert the target SoC before profiling.
+                          Use only when intentionally running despite unknown
+                          or mismatched SoC metadata.
   --times N               Profiling inference count when supported.
                           Default: 50
   --profile-mode MODE     auto, none, or arg. Default: auto.
@@ -405,6 +409,10 @@ while [ "$#" -gt 0 ]; do
       TARGET_SOC="$2"
       shift 2
       ;;
+    --skip-soc-check)
+      CHECK_SOC=0
+      shift
+      ;;
     --times)
       [ "$#" -ge 2 ] || die "--times requires a value"
       TIMES="$2"
@@ -508,10 +516,11 @@ write_target_info "$TARGET_INFO"
 TARGET_SOC_NORMALIZED=""
 DEVICE_SOC_VERSIONS=""
 SOC_CHECK_RESULT="SKIPPED"
-if [ -n "$TARGET_SOC" ]; then
+if [ "$CHECK_SOC" -eq 1 ] && [ -n "$TARGET_SOC" ]; then
   TARGET_SOC_NORMALIZED="$(normalize_soc_token "$TARGET_SOC")" || die "--target-soc must look like a Kirin target, for example Kirin9020 or Kirin9030"
   DEVICE_SOC_VERSIONS="$(extract_soc_versions_from_file "$TARGET_INFO" || true)"
   {
+    echo "check_soc=$CHECK_SOC"
     echo "target_soc=$TARGET_SOC"
     echo "target_soc_normalized=$TARGET_SOC_NORMALIZED"
     echo "device_soc_versions=$DEVICE_SOC_VERSIONS"
@@ -531,10 +540,12 @@ if [ -n "$TARGET_SOC" ]; then
     warn "target SoC assertion was provided, but device params did not expose a Kirin SoC"
   fi
 else
+  DEVICE_SOC_VERSIONS="$(extract_soc_versions_from_file "$TARGET_INFO" || true)"
   {
-    echo "target_soc="
-    echo "target_soc_normalized="
-    echo "device_soc_versions=$(extract_soc_versions_from_file "$TARGET_INFO" || true)"
+    echo "check_soc=$CHECK_SOC"
+    echo "target_soc=$TARGET_SOC"
+    echo "target_soc_normalized=$TARGET_SOC_NORMALIZED"
+    echo "device_soc_versions=$DEVICE_SOC_VERSIONS"
     echo "result=$SOC_CHECK_RESULT"
   } > "$SOC_CHECK_LOG"
 fi
@@ -623,6 +634,7 @@ fi
   echo "output_dir=$RUN_DIR/"
   echo "output_name=$OUTPUT_NAME"
   echo "output_type=$OUTPUT_TYPE"
+  echo "check_soc=$CHECK_SOC"
   echo "target_soc=$TARGET_SOC"
   echo "target_soc_normalized=$TARGET_SOC_NORMALIZED"
   echo "soc_check_result=$SOC_CHECK_RESULT"
@@ -710,6 +722,7 @@ write_manifest() {
     echo "INPUT=$INPUT_ABS"
     echo "OUTPUT_NAME=$OUTPUT_NAME"
     echo "OUTPUT_TYPE=$OUTPUT_TYPE"
+    echo "CHECK_SOC=$CHECK_SOC"
     echo "TARGET_SOC=$TARGET_SOC"
     echo "TARGET_SOC_NORMALIZED=$TARGET_SOC_NORMALIZED"
     echo "SOC_CHECK_RESULT=$SOC_CHECK_RESULT"

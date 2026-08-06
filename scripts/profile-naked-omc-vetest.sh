@@ -44,6 +44,7 @@ COMPARE_SCRIPT_EXPLICIT=0
 NO_DATA_PROC=0
 NO_ARCHIVE=0
 NO_CLEAN=0
+CHECK_SOC=1
 HILOG_CLEAR=1
 DRY_RUN=0
 OMC_EXPLICIT=0
@@ -79,6 +80,9 @@ Options:
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
   --target-soc SOC       Expected target SoC, e.g. Kirin9020 or Kirin9030.
                          Used as a device-side assertion before profiling.
+  --skip-soc-check       Do not assert the target SoC before profiling.
+                         Use only when intentionally running despite unknown
+                         or mismatched SoC metadata.
   --device-dir DIR       Target work root. Default: /data/local/tmp/z84378291
   --model-run-tool PATH  Target-side model_run_tool path. Prefer passing this
                          explicitly for shared real-device test machines.
@@ -515,6 +519,10 @@ while [ "$#" -gt 0 ]; do
       TARGET_SOC_EXPLICIT=1
       shift 2
       ;;
+    --skip-soc-check)
+      CHECK_SOC=0
+      shift
+      ;;
     --device-dir)
       [ "$#" -ge 2 ] || die "--device-dir requires a target path"
       DEVICE_DIR="$2"
@@ -819,6 +827,9 @@ fi
 if [ -n "${TARGET_SOC}" ]; then
   TARGET_CMD="${TARGET_CMD} --target-soc $(remote_quote "${TARGET_SOC}")"
 fi
+if [ "${CHECK_SOC}" -eq 0 ]; then
+  TARGET_CMD="${TARGET_CMD} --skip-soc-check"
+fi
 if [ -n "${PROFILING_ARG}" ]; then
   TARGET_CMD="${TARGET_CMD} --profiling-arg $(remote_quote "${PROFILING_ARG}")"
 fi
@@ -853,6 +864,7 @@ fi
   printf 'REMOTE_INPUTS="%s"\n' "$(manifest_value "${REMOTE_INPUTS}")"
   printf 'MODEL_RUN_TOOL="%s"\n' "$(manifest_value "${MODEL_RUN_TOOL}")"
   printf 'DATA_PROC_TOOL="%s"\n' "$(manifest_value "${DATA_PROC_TOOL}")"
+  printf 'CHECK_SOC="%s"\n' "${CHECK_SOC}"
   printf 'COMPARE="%s"\n' "${COMPARE}"
   printf 'COMPARE_SCRIPT="%s"\n' "$(manifest_value "${COMPARE_SCRIPT}")"
   printf 'PYTHON_BIN="%s"\n' "$(manifest_value "${PYTHON_BIN}")"
@@ -881,6 +893,7 @@ if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF
 TARGET=${TARGET}
 TARGET_SOC=${TARGET_SOC:-<auto>}
+CHECK_SOC=${CHECK_SOC}
 RUN_ID=${RUN_ID}
 EVIDENCE_DIR=${EVIDENCE_DIR}
 DEVICE_DIR=${DEVICE_DIR}
@@ -918,6 +931,7 @@ log "run id: ${RUN_ID}"
 log "bundle: ${BUNDLE_DIR:-<none>}"
 log "device dir: ${DEVICE_DIR}"
 log "target soc: ${TARGET_SOC:-<auto>}"
+log "check soc: ${CHECK_SOC}"
 log "model_run_tool: ${MODEL_RUN_TOOL}"
 log "data_proc_tool: ${DATA_PROC_TOOL}"
 
@@ -1045,6 +1059,7 @@ fi
   echo "pull_archive_status=${PULL_ARCHIVE_STATUS}"
   echo "pull_output_status=${PULL_OUTPUT_STATUS}"
   echo "output_local=${OUTPUT_LOCAL}"
+  echo "check_soc=${CHECK_SOC}"
   echo "compare=${COMPARE}"
   echo "compare_script=${COMPARE_SCRIPT:-}"
   echo "python_bin=${PYTHON_BIN:-}"
