@@ -792,7 +792,7 @@ Next decisive evidence needed from the real HarmonyOS PC:
 
 2026-08-04 Kirin9030 artifact search and generic-bundle update:
 
-- The target artifact search has been broadened from Sobel/QuantMatmul to any precompiled CANN `.omc` that can be tied to Kirin9030/Changsha/Q709030.
+- The target artifact search has been broadened from Sobel/QuantMatmul to any precompiled CANN `.omc` that can be tied to Kirin9030/Changsha.
 - Current public-source result:
   - Local `cann-recipes-harmony-infer` has Kirin9030-capable source samples such as QuantMatmul, but no checked-in Kirin9030 `.omc`.
   - QuantMatmul evidence: docs list Kirin 9030 as supported, `CMakePresets.json` sets `ASCEND_COMPUTE_UNIT=kirin9030`, and `op_host/quant_matmul_custom.cpp` calls `AddConfig("kirin9030")`.

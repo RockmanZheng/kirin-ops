@@ -94,7 +94,7 @@ normalize_chip() {
 
   lower="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
   case "${lower}" in
-    *kirin*9030*|*changsha*|*q709030*)
+    *kirin*9030*|*changsha*)
       printf '%s\n' "kirin9030"
       ;;
     *kirin*9020*)
@@ -262,7 +262,7 @@ if [ -n "${HDC_BIN}" ] && [ -n "${TARGET}" ]; then
   echo "ohos.boot.chiptype=${chip_text}"
   echo "normalized_chip=${chip_norm:-<unknown>}"
   if [ "${chip_norm}" != "kirin9030" ]; then
-    append_failure "target chip is not proven Kirin9030/Changsha/Q709030"
+    append_failure "target chip is not proven Kirin9030/Changsha"
   fi
 
   uname_m="$("${HDC_BIN}" -t "${TARGET}" shell uname -m 2>&1 | tr -d '\r' || true)"
