@@ -29,6 +29,7 @@ OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
 COMPARE_SCRIPT="${COMPARE_SCRIPT:-}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 TARGET="${TARGET:-}"
 TARGET_SOC="${TARGET_SOC:-}"
 MODEL_RUN_TOOL="${MODEL_RUN_TOOL:-/data/local/tmp/model_run_tool}"
@@ -119,6 +120,9 @@ Options:
   --no-compare           Do not validate pulled output with the golden file.
   --compare-script PATH  Python precision validator. Required when COMPARE=1.
                          Byte cmp is retired.
+  --python-bin PATH      Python interpreter for host-side precision validation.
+                         Default: first python with numpy from PATH, /usr/bin,
+                         python3.13, python3.12, or python3.11.
   --no-logs              Do not capture hilog.
   --no-strict            Do not exit nonzero when output/log validation is incomplete.
   --dry-run              Print resolved settings and exit.
@@ -246,6 +250,46 @@ resolve_compare_script() {
   fi
 }
 
+resolve_executable() {
+  local candidate="$1"
+
+  case "${candidate}" in
+    */*)
+      [ -x "${candidate}" ] || return 1
+      printf '%s\n' "${candidate}"
+      ;;
+    *)
+      command -v "${candidate}" 2>/dev/null || return 1
+      ;;
+  esac
+}
+
+select_python_bin() {
+  local candidate
+  local resolved
+  local -a candidates
+
+  if [ -n "${PYTHON_BIN}" ]; then
+    resolved="$(resolve_executable "${PYTHON_BIN}" || true)"
+    [ -n "${resolved}" ] || return 1
+    "${resolved}" -c 'import numpy' >/dev/null 2>&1 || return 1
+    PYTHON_BIN="${resolved}"
+    return 0
+  fi
+
+  candidates=(python3 /usr/bin/python3 python3.13 python3.12 python3.11)
+  for candidate in "${candidates[@]}"; do
+    resolved="$(resolve_executable "${candidate}" || true)"
+    [ -n "${resolved}" ] || continue
+    if "${resolved}" -c 'import numpy' >/dev/null 2>&1; then
+      PYTHON_BIN="${resolved}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 run_python_compare() {
   local input_for_reference
   local status
@@ -269,27 +313,19 @@ run_python_compare() {
     return 127
   fi
 
-  if ! command -v python3 >/dev/null 2>&1; then
+  if ! select_python_bin; then
     {
       echo "compare_script=${COMPARE_SCRIPT}"
+      echo "python_bin=${PYTHON_BIN:-}"
       echo "status=127"
-      echo "reason=python3 not found on host running this script"
-    } > "${COMPARE_LOG}"
-    return 127
-  fi
-
-  if ! python3 -c 'import numpy' >/dev/null 2>&1; then
-    {
-      echo "compare_script=${COMPARE_SCRIPT}"
-      echo "status=127"
-      echo "reason=python3 numpy module not found on host running this script"
+      echo "reason=no Python interpreter with numpy found; set PYTHON_BIN or install numpy"
     } > "${COMPARE_LOG}"
     return 127
   fi
 
   input_for_reference="${INPUT_FILES[0]}"
   compare_cmd=(
-    python3 "${COMPARE_SCRIPT}"
+    "${PYTHON_BIN}" "${COMPARE_SCRIPT}"
     --output "${OUTPUT_LOCAL}"
     --golden "${GOLDEN}"
     --input "${input_for_reference}"
@@ -298,6 +334,7 @@ run_python_compare() {
   set +e
   {
     echo "compare_script=${COMPARE_SCRIPT}"
+    echo "python_bin=${PYTHON_BIN}"
     printf 'compare_command='
     printf '%q ' "${compare_cmd[@]}"
     printf '\n\n'
@@ -327,6 +364,9 @@ normalize_soc_token() {
 
   lower="$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')"
   case "${lower}" in
+    changsha*|q709030*)
+      printf '%s\n' "kirin9030"
+      ;;
     kirinx[0-9]*)
       printf '%s\n' "${lower}" | sed -E 's/^(kirinx[0-9]+).*/\1/'
       ;;
@@ -635,6 +675,7 @@ write_failure_summary_if_missing() {
     echo "output_pulled=${OUTPUT_PULLED:-0}"
     echo "compare=${COMPARE:-}"
     echo "compare_script=${COMPARE_SCRIPT:-}"
+    echo "python_bin=${PYTHON_BIN:-}"
     echo "compare_result=${COMPARE_RESULT:-NOT_REACHED}"
     echo "run_failed=${RUN_FAILED:-1}"
     echo "run_failure_reason=${RUN_FAILURE_REASON:-${failure_message}}"
@@ -976,8 +1017,13 @@ while [ "$#" -gt 0 ]; do
       COMPARE_SCRIPT_EXPLICIT=1
       shift 2
       ;;
+    --python-bin)
+      [ "$#" -ge 2 ] || die "--python-bin requires a Python interpreter path"
+      PYTHON_BIN="$2"
+      shift 2
+      ;;
     --compare-mode|--compare-validator)
-      die "$1 is retired; use --compare-script for a Python precision validator, or rely on Sobel auto-detection"
+      die "$1 is retired; use --compare-script or bundle.env COMPARE_SCRIPT"
       ;;
     --no-logs)
       CAPTURE_LOGS=0
@@ -1138,6 +1184,10 @@ if [ "${COMPARE}" -eq 1 ] && [ -n "${GOLDEN}" ] && [ -z "${COMPARE_SCRIPT}" ]; t
   die "COMPARE_SCRIPT not set; byte comparison is retired"
 fi
 
+if [ "${COMPARE}" -eq 1 ] && [ -n "${GOLDEN}" ] && [ -n "${COMPARE_SCRIPT}" ]; then
+  select_python_bin || true
+fi
+
 if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF
 HDC_BIN=${HDC_BIN}
@@ -1171,6 +1221,7 @@ RUNNER_LAUNCH_ERROR_RE=${RUNNER_LAUNCH_ERROR_RE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
 COMPARE_SCRIPT=${COMPARE_SCRIPT:-<none>}
+PYTHON_BIN=${PYTHON_BIN:-<none>}
 STRICT=${STRICT}
 LOG_RE=${LOG_RE}
 EOF
@@ -1271,6 +1322,7 @@ if [ -z "${TARGET}" ]; then
   TARGET_COUNT=0
   FIRST_TARGET=""
   while IFS= read -r line; do
+    line="${line%$'\r'}"
     [ "${line}" != "[Empty]" ] || continue
     target_word="$(printf '%s\n' "${line}" | awk 'NF {print $1}')"
     [ -n "${target_word}" ] || continue
@@ -1631,6 +1683,7 @@ fi
   echo "output_pulled=${OUTPUT_PULLED}"
   echo "compare=${COMPARE}"
   echo "compare_script=${COMPARE_SCRIPT:-}"
+  echo "python_bin=${PYTHON_BIN:-}"
   echo "compare_result=${COMPARE_RESULT}"
   echo "run_failed=${RUN_FAILED:-0}"
   echo "run_failure_reason=${RUN_FAILURE_REASON:-}"

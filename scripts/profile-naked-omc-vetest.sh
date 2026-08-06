@@ -23,6 +23,7 @@ OMC="${OMC:-}"
 INPUT="${INPUT:-}"
 GOLDEN="${GOLDEN:-}"
 COMPARE_SCRIPT="${COMPARE_SCRIPT:-}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 OUTPUT_NAME="${OUTPUT_NAME:-output_0}"
 OUTPUT_TYPE="${OUTPUT_TYPE:-}"
 TARGET="${TARGET:-}"
@@ -94,6 +95,9 @@ Options:
   --no-compare           Pull output but skip golden comparison.
   --compare-script PATH  Python precision validator. Required when COMPARE=1.
                          Byte cmp is retired.
+  --python-bin PATH      Python interpreter for host-side precision validation.
+                         Default: first python with numpy from PATH, /usr/bin,
+                         python3.13, python3.12, or python3.11.
   --no-data-proc         Ask target script not to run data_proc_tool.
   --no-archive           Ask target script not to archive the run directory.
   --no-clean             Ask target script not to remove stale profile/output files.
@@ -261,6 +265,46 @@ resolve_compare_script() {
   fi
 }
 
+resolve_executable() {
+  local candidate="$1"
+
+  case "${candidate}" in
+    */*)
+      [ -x "${candidate}" ] || return 1
+      printf '%s\n' "${candidate}"
+      ;;
+    *)
+      command -v "${candidate}" 2>/dev/null || return 1
+      ;;
+  esac
+}
+
+select_python_bin() {
+  local candidate
+  local resolved
+  local -a candidates
+
+  if [ -n "${PYTHON_BIN}" ]; then
+    resolved="$(resolve_executable "${PYTHON_BIN}" || true)"
+    [ -n "${resolved}" ] || return 1
+    "${resolved}" -c 'import numpy' >/dev/null 2>&1 || return 1
+    PYTHON_BIN="${resolved}"
+    return 0
+  fi
+
+  candidates=(python3 /usr/bin/python3 python3.13 python3.12 python3.11)
+  for candidate in "${candidates[@]}"; do
+    resolved="$(resolve_executable "${candidate}" || true)"
+    [ -n "${resolved}" ] || continue
+    if "${resolved}" -c 'import numpy' >/dev/null 2>&1; then
+      PYTHON_BIN="${resolved}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 run_python_compare() {
   local input_for_reference
   local status
@@ -284,27 +328,19 @@ run_python_compare() {
     return 127
   fi
 
-  if ! command -v python3 >/dev/null 2>&1; then
+  if ! select_python_bin; then
     {
       echo "compare_script=${COMPARE_SCRIPT}"
+      echo "python_bin=${PYTHON_BIN:-}"
       echo "status=127"
-      echo "reason=python3 not found on host running this script"
-    } > "${COMPARE_LOG}"
-    return 127
-  fi
-
-  if ! python3 -c 'import numpy' >/dev/null 2>&1; then
-    {
-      echo "compare_script=${COMPARE_SCRIPT}"
-      echo "status=127"
-      echo "reason=python3 numpy module not found on host running this script"
+      echo "reason=no Python interpreter with numpy found; set PYTHON_BIN or install numpy"
     } > "${COMPARE_LOG}"
     return 127
   fi
 
   input_for_reference="${INPUT_FILES[0]}"
   compare_cmd=(
-    python3 "${COMPARE_SCRIPT}"
+    "${PYTHON_BIN}" "${COMPARE_SCRIPT}"
     --output "${OUTPUT_LOCAL}"
     --golden "${GOLDEN}"
     --input "${input_for_reference}"
@@ -313,6 +349,7 @@ run_python_compare() {
   set +e
   {
     echo "compare_script=${COMPARE_SCRIPT}"
+    echo "python_bin=${PYTHON_BIN}"
     printf 'compare_command='
     printf '%q ' "${compare_cmd[@]}"
     printf '\n\n'
@@ -543,8 +580,13 @@ while [ "$#" -gt 0 ]; do
       COMPARE_SCRIPT_EXPLICIT=1
       shift 2
       ;;
+    --python-bin)
+      [ "$#" -ge 2 ] || die "--python-bin requires a Python interpreter path"
+      PYTHON_BIN="$2"
+      shift 2
+      ;;
     --compare-mode|--compare-validator)
-      die "$1 is retired; use --compare-script for a Python precision validator, or rely on Sobel auto-detection"
+      die "$1 is retired; use --compare-script or bundle.env COMPARE_SCRIPT"
       ;;
     --no-data-proc)
       NO_DATA_PROC=1
@@ -596,6 +638,10 @@ case "${PROFILE_MODE}" in
 esac
 
 [ -f "${TARGET_SCRIPT}" ] || die "target profiling script not found: ${TARGET_SCRIPT}"
+if ! command -v hdc >/dev/null 2>&1 && [ -f "${ROOT}/scripts/local-macos-env.sh" ]; then
+  # shellcheck disable=SC1091
+  source "${ROOT}/scripts/local-macos-env.sh" >/dev/null 2>&1 || true
+fi
 command -v hdc >/dev/null 2>&1 || die "hdc not found in PATH"
 
 if [ -z "${BUNDLE_DIR}" ] && [ -n "${BUNDLE_MANIFEST}" ]; then
@@ -700,6 +746,9 @@ fi
 if [ "${COMPARE}" -eq 1 ] && [ -z "${COMPARE_SCRIPT}" ]; then
   die "COMPARE_SCRIPT not set; byte comparison is retired"
 fi
+if [ "${COMPARE}" -eq 1 ] && [ -n "${COMPARE_SCRIPT}" ]; then
+  select_python_bin || true
+fi
 
 if [ -z "${RUN_ID}" ]; then
   RUN_ID="profile_$(date +%Y%m%d_%H%M%S)"
@@ -717,6 +766,7 @@ if [ -z "${TARGET}" ]; then
   TARGET_COUNT=0
   FIRST_TARGET=""
   while IFS= read -r line; do
+    line="${line%$'\r'}"
     [ "${line}" != "[Empty]" ] || continue
     target_word="$(printf '%s\n' "${line}" | awk 'NF {print $1}')"
     [ -n "${target_word}" ] || continue
@@ -805,6 +855,7 @@ fi
   printf 'DATA_PROC_TOOL="%s"\n' "$(manifest_value "${DATA_PROC_TOOL}")"
   printf 'COMPARE="%s"\n' "${COMPARE}"
   printf 'COMPARE_SCRIPT="%s"\n' "$(manifest_value "${COMPARE_SCRIPT}")"
+  printf 'PYTHON_BIN="%s"\n' "$(manifest_value "${PYTHON_BIN}")"
   printf 'HILOG_CLEAR="%s"\n' "${HILOG_CLEAR}"
   printf 'HILOG_CLEAR_TIMEOUT="%s"\n' "${HILOG_CLEAR_TIMEOUT}"
   printf 'OMC_EXPLICIT="%s"\n' "${OMC_EXPLICIT}"
@@ -847,6 +898,7 @@ OUTPUT_NAME=${OUTPUT_NAME}
 OUTPUT_TYPE=${OUTPUT_TYPE:-<none>}
 COMPARE=${COMPARE}
 COMPARE_SCRIPT=${COMPARE_SCRIPT:-<none>}
+PYTHON_BIN=${PYTHON_BIN:-<none>}
 HILOG_CLEAR=${HILOG_CLEAR}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 
@@ -968,6 +1020,7 @@ elif [ "${COMPARE}" -eq 1 ]; then
   COMPARE_RESULT="FAIL"
   {
     echo "compare_script=${COMPARE_SCRIPT:-}"
+    echo "python_bin=${PYTHON_BIN:-}"
     echo "status=127"
     echo "reason=output pull failed or output is empty; Python precision validation could not run"
   } > "${COMPARE_LOG}"
@@ -994,6 +1047,7 @@ fi
   echo "output_local=${OUTPUT_LOCAL}"
   echo "compare=${COMPARE}"
   echo "compare_script=${COMPARE_SCRIPT:-}"
+  echo "python_bin=${PYTHON_BIN:-}"
   echo "compare_result=${COMPARE_RESULT}"
   echo "result=${RESULT}"
 } > "${EVIDENCE_DIR}/summary.txt"

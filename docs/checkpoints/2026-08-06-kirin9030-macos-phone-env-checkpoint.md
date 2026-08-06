@@ -26,7 +26,8 @@ to this macOS desktop.
 
 ## Readiness Decision
 
-Not completely ready yet.
+Host-side preparation is hardened, but end-to-end readiness still waits for a
+connected phone.
 
 Ready-to-run requires:
 
@@ -38,6 +39,31 @@ Ready-to-run requires:
 4. Host `python3` used by the wrapper can import numpy, or wrappers are hardened
    to choose a numpy-capable interpreter.
 5. No use of `--skip-soc-check` if target params report Kirin9020.
+
+## Hardening Implemented
+
+- Added `scripts/check-kirin9030-phone-hdc-env.sh` as the first command to run
+  when the phone arrives.
+- Both host wrappers now honor `PYTHON_BIN` / `--python-bin` and auto-select a
+  Python interpreter that can import numpy.
+- `scripts/profile-naked-omc-vetest.sh` now auto-sources
+  `scripts/local-macos-env.sh`, matching the test wrapper.
+- SoC normalization maps `changsha` and `q709030` to `kirin9030`.
+- HDC target parsing strips CR characters so macOS `[Empty]` output is not
+  mistaken for a target.
+
+Current no-phone helper result:
+
+```text
+python_bin=/usr/bin/python3
+numpy_version=2.0.2
+bundle metadata ok: OUTPUT_TYPE=UINT8, TARGET_SOC=kirin9030, COMPARE_SCRIPT=compare-sobel-output.py
+result=NOT_READY
+failure_count=2
+```
+
+The two expected failures are `no hdc target connected or authorized` and
+`target checks skipped because no usable hdc target is selected`.
 
 ## Plan File
 
