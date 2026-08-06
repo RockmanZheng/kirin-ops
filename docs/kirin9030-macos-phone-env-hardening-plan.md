@@ -2,9 +2,9 @@
 
 Date: 2026-08-06
 
-Status: not completely ready yet. The macOS desktop has enough installed
-tooling to become the host, but the phone is not connected and several
-preflight gaps should be closed before using this as the new prod environment.
+Status: host-side hardening is prepared. The environment is still not
+end-to-end ready until the phone is connected, authorized, and proves
+Kirin9030 / Changsha / Q709030 chip identity.
 
 ## Scope
 
@@ -107,31 +107,49 @@ Primary references:
    It must be compatible with the phone OS/ABI and executable from
    `/data/local/tmp/z84378291`.
 
-4. Host-side Python/numpy selection is not hardened.
+4. Host-side Python/numpy selection must be verified.
 
    The strict Sobel compare runs on the host after pulling `output_0`. This Mac
    has numpy under `/usr/bin/python3`, but not under the default Homebrew
-   `python3` that can appear first in `PATH`.
+   `python3` that can appear first in `PATH`. The wrappers now auto-select a
+   numpy-capable Python or honor `--python-bin` / `PYTHON_BIN`.
 
-5. Profiling wrapper macOS env sourcing is inconsistent.
+5. Profiling wrapper macOS env sourcing is prepared.
 
    `scripts/test-naked-omc-vetest.sh` auto-sources `scripts/local-macos-env.sh`
    when `hdc` is not already in `PATH`. `scripts/profile-naked-omc-vetest.sh`
-   currently requires the user to source that env manually.
+   now does the same.
 
-6. SoC normalization is too narrow for Changsha/Q709030 wording.
+6. SoC normalization handles Changsha/Q709030.
 
    The test wrapper extracts and normalizes `kirinNNNN` tokens. It records
-   `Changsha` and `Q709030` in raw strings, but it does not normalize those
-   names to `kirin9030` for strict preflight. If the phone only reports
-   Changsha/Q709030 and not Kirin9030, we need either a manual chip-evidence
-   checkpoint or parser hardening before making a strong automated claim.
+   `Changsha` and `Q709030` in raw strings, and now normalizes those names to
+   `kirin9030` for strict preflight. Bare `CHS` remains manual evidence unless
+   it appears with a stronger Kirin9030/Changsha/Q709030 token.
 
 ## Hardening Plan
 
 ### Phase 0: Do Not Run Until Chip Proof Exists
 
 After connecting the phone and accepting the device trust prompt, collect:
+
+```bash
+source scripts/local-macos-env.sh
+
+scripts/check-kirin9030-phone-hdc-env.sh
+```
+
+If multiple targets are connected, pass the target explicitly:
+
+```bash
+SN="<target-id>"
+scripts/check-kirin9030-phone-hdc-env.sh --target "$SN"
+```
+
+The helper writes a report under `artifacts/phone-env-checks/` and exits
+nonzero until all readiness gates pass.
+
+Manual minimum commands:
 
 ```bash
 source scripts/local-macos-env.sh
@@ -171,14 +189,15 @@ If `hdc` is still missing, call it directly:
 /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc -v
 ```
 
-Recommended code hardening:
+Implemented code hardening:
 
-- Make `scripts/profile-naked-omc-vetest.sh` auto-source
+- `scripts/profile-naked-omc-vetest.sh` auto-sources
   `scripts/local-macos-env.sh`, matching the test wrapper.
-- Add a dedicated preflight helper, for example
-  `scripts/check-kirin9030-phone-hdc-env.sh`, to collect host HDC version,
-  target list, chip params, writable/executable target directory, runner
-  evidence, host Python/numpy, and bundle metadata in one compact report.
+- `scripts/check-kirin9030-phone-hdc-env.sh` collects host HDC version, target
+  list, chip params, writable/executable target directory, runner evidence,
+  host Python/numpy, and bundle metadata in one compact report.
+- The HDC target parser strips CR characters from macOS HDC output, so `[Empty]`
+  is not misread as a target.
 
 ### Phase 2: Harden Host Python Selection
 
@@ -195,13 +214,14 @@ PATH="/tmp/kirin-python3-bin:$PATH" python3 -c 'import numpy; print(numpy.__vers
 Then run the wrapper from the same shell with `/tmp/kirin-python3-bin` first in
 `PATH`.
 
-Recommended code hardening:
+Implemented code hardening:
 
-- Teach both host wrappers to honor `PYTHON_BIN`.
-- If `PYTHON_BIN` is not set, select the first Python interpreter that can
+- Both host wrappers honor `PYTHON_BIN` / `--python-bin`.
+- If `PYTHON_BIN` is not set, they select the first Python interpreter that can
   import numpy from: `python3`, `/usr/bin/python3`, `python3.13`,
   `python3.12`, and `python3.11`.
-- Record the selected Python path/version in evidence.
+- The selected Python path is recorded in compare logs, dry-run output, and
+  summary evidence.
 
 Acceptance:
 
@@ -338,17 +358,16 @@ scripts/profile-naked-omc-vetest.sh \
 
 Profiling PASS does not replace accuracy PASS. It is a second evidence layer.
 
-## Recommended Next PR
+## Implemented Hardening
 
-Before the first serious macOS-phone run, land a small hardening PR:
+Prepared before the first serious macOS-phone run:
 
-1. Add `PYTHON_BIN` / numpy-capable Python auto-selection to both host wrappers.
+1. Added `PYTHON_BIN` / numpy-capable Python auto-selection to both host wrappers.
 2. Auto-source `scripts/local-macos-env.sh` in the profiling wrapper.
-3. Normalize `changsha`, `q709030`, and `chs` to `kirin9030` in SoC preflight.
-4. Add `scripts/check-kirin9030-phone-hdc-env.sh` for one-command host/phone
+3. Normalize `changsha` and `q709030` to `kirin9030` in SoC preflight.
+4. Added `scripts/check-kirin9030-phone-hdc-env.sh` for one-command host/phone
    readiness evidence.
-5. Add this plan's acceptance gates to the playbook.
+5. Hardened HDC `[Empty]` target parsing for macOS CR output.
 
-Until that PR lands, the manual workaround is acceptable for a single spike run,
-but the final claim must include the exact chip proof, selected Python path, and
-evidence archive.
+The final claim must still include the exact chip proof, selected Python path,
+and evidence archive.

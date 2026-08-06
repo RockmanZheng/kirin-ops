@@ -193,6 +193,18 @@ hdc -t "$SN" shell "param get ohos.boot.chiptype"
 
 如果这条命令返回 `Kirin9020`，脚本会把设备侧 chiptype 作为 target SoC 来源。`--target-soc` 只作为设备参数缺失时的补充，或作为人工断言；如果人工断言和设备参数冲突，严格模式会直接失败。
 
+macOS 直连 Kirin9030/Changsha 手机时，先跑一键环境检查：
+
+```bash
+source scripts/local-macos-env.sh
+scripts/check-kirin9030-phone-hdc-env.sh --target "$SN"
+```
+
+这条命令会检查 host HDC、target chiptype、`uname -m`、设备目录写入、
+`model_run_tool`、host Python/numpy、以及 Sobel bundle metadata。手机还没
+连接时它应当返回 `result=NOT_READY`；手机接入后，只有 `result=READY` 才
+进入正式 OMC 测试。
+
 ## 在另一台 HarmonyOS PC 上执行
 
 先拿代码和脚本：
