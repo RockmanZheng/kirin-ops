@@ -279,18 +279,35 @@ profile_artifact_members() {
   local archive="$1"
 
   {
-    archive_matching_members "${archive}" '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|json|trace)$' "${MAX_LIST_LINES}"
+    archive_matching_members "${archive}" '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|prof|json|trace)$' "${MAX_LIST_LINES}"
     if [ -d "${RUN_DIR}/target-run" ]; then
-      find "${RUN_DIR}/target-run" -maxdepth 5 -type f 2>/dev/null | grep -Ei '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|json|trace)$' || true
+      find "${RUN_DIR}/target-run" -maxdepth 5 -type f 2>/dev/null | grep -Ei '(^|/)(csv|prof_data|profiling|msprof|trace|timeline|kernel|task)(/|[^/]*$)|\.(csv|prof|json|trace)$' || true
     fi
   } | { grep -Ev '/$' || true; } | { grep -Eiv 'profile-candidates|model_run_tool|data_proc_tool|profiling-evidence-report|manifest|target-info|files-before|files-after|hashes|command\.txt|output_0' || true; } | sed '/^$/d' | sort -u | sed -n "1,${MAX_LIST_LINES}p"
 }
 
 first_csv_member() {
   local archive="$1"
+  local csv_members=""
+  local preferred=""
 
   [ -n "${archive}" ] || return 0
-  archive_matching_members "${archive}" '\.csv$' 1
+  csv_members="$(archive_matching_members "${archive}" '\.csv$' "${MAX_LIST_LINES}")"
+  [ -n "${csv_members}" ] || return 0
+
+  preferred="$(printf '%s\n' "${csv_members}" | grep -Ei '(^|[/_-])(op|operator|kernel|task)([._/-]|$)' | sed -n '1p' || true)"
+  if [ -n "${preferred}" ]; then
+    printf '%s\n' "${preferred}"
+    return 0
+  fi
+
+  preferred="$(printf '%s\n' "${csv_members}" | grep -Ei '(^|[/_-])(model)([._/-]|$)' | sed -n '1p' || true)"
+  if [ -n "${preferred}" ]; then
+    printf '%s\n' "${preferred}"
+    return 0
+  fi
+
+  printf '%s\n' "${csv_members}" | sed -n '1p'
 }
 
 emit_value() {
@@ -411,6 +428,8 @@ emit_kernel_report() {
   local profiling_disabled_count=""
   local profiling_config=""
   local data_proc_probe=""
+  local profile_artifacts_log=""
+  local external_profile_outputs=""
   local profile_search=""
   local command_debug=""
   local runner_help_debug=""
@@ -447,7 +466,9 @@ emit_kernel_report() {
   if [ -z "${data_proc_probe}" ]; then
     data_proc_probe="$(target_probe_line "data_proc_tool-help.txt" "${archive}" 'usage|help|profile|csv|result')"
   fi
+  profile_artifacts_log="$(emit_target_file_content "profile-artifacts.txt" "${archive}" 2>/dev/null || true)"
   profile_search="$(emit_target_file_content "profile-search.txt" "${archive}" 2>/dev/null || true)"
+  external_profile_outputs="$(printf '%s\n' "${profile_search}" | grep -Ei '\.(csv|prof|json|trace)$' | sed -n '1,20p' || true)"
   command_debug="$(emit_target_file_content "command.txt" "${archive}" 2>/dev/null || true)"
   runner_help_debug="$(target_probe_lines "model_run_tool-help.txt" "${archive}" 'enable_item|profil|profile|times|output|result|path|csv|save|dump|trace|log|item' 40)"
   data_proc_help_debug="$(target_probe_lines "data_proc_tool-help.txt" "${archive}" 'result_path|output_path|enable_item|profil|profile|times|output|result|path|csv|save|dump|trace|log|item|ERROR|WARN|Usage|usage' 40)"
@@ -460,6 +481,8 @@ emit_kernel_report() {
   if [ -n "${profile_artifacts}" ]; then
     verdict="AVAILABLE"
     reason="candidate profiling artifact files are present; inspect the listed CSV/profile files"
+  elif [ "${data_proc_status}" = "0" ] && [ -n "${external_profile_outputs}" ]; then
+    reason="data_proc_tool produced profile outputs in an external candidate directory, but they were not copied into the evidence archive"
   elif [ "${data_proc_status}" = "NO_PROFILE_DIR" ] && [ "${profiling_enabled_count}" != "0" ] && printf '%s\n' "${profile_search}" | grep -Eq 'candidate dirs after model_run_tool|candidate dirs before model_run_tool'; then
     reason="profiling was enabled, but no new or changed raw profiling directory was selected for data_proc_tool"
   elif [ "${data_proc_status}" = "NO_PROFILE_DIR" ]; then
@@ -584,6 +607,10 @@ emit_kernel_report() {
     printf 'data_proc_tool-run.log=missing\n'
   fi
   emit_value "data_proc_tool_probe" "${data_proc_probe}"
+  if [ -n "${profile_artifacts_log}" ]; then
+    printf '\nprofile_artifacts_log:\n'
+    printf '%s\n' "${profile_artifacts_log}" | sed -n "1,${MAX_FILE_LINES}p"
+  fi
 
   emit_kernel_csv_preview "${archive}"
 

@@ -493,6 +493,68 @@ merge_profile_candidates() {
   done | awk 'NF && !seen[$0]++' > "$out_file"
 }
 
+safe_artifact_name() {
+  printf '%s\n' "$1" | sed 's#^/##; s#[^A-Za-z0-9._-]#_#g'
+}
+
+copy_profile_artifacts() {
+  candidates_file="$1"
+  dest_root="$2"
+  log_file="$3"
+
+  : > "$log_file"
+  [ -s "$candidates_file" ] || {
+    echo "no selected profile candidates" >> "$log_file"
+    return 0
+  }
+
+  mkdir -p "$dest_root" 2>> "$log_file" || {
+    echo "failed to create artifact root: $dest_root" >> "$log_file"
+    return 0
+  }
+
+  while IFS= read -r candidate_dir; do
+    [ -n "$candidate_dir" ] || continue
+    [ -d "$candidate_dir" ] || {
+      echo "missing candidate dir: $candidate_dir" >> "$log_file"
+      continue
+    }
+
+    case "$candidate_dir/" in
+      "$RUN_DIR"/*)
+        echo "already inside run dir: $candidate_dir" >> "$log_file"
+        continue
+        ;;
+    esac
+
+    dest="$dest_root/$(safe_artifact_name "$candidate_dir")"
+    rm -rf "$dest" 2>> "$log_file" || true
+    if cp -R "$candidate_dir" "$dest" >> "$log_file" 2>&1; then
+      echo "copied: $candidate_dir -> $dest" >> "$log_file"
+      continue
+    fi
+
+    echo "recursive copy failed; copying common profile files individually: $candidate_dir" >> "$log_file"
+    mkdir -p "$dest" 2>> "$log_file" || continue
+    find "$candidate_dir" -maxdepth 5 -type f \( \
+      -name '*.csv' \
+      -o -name '*.prof' \
+      -o -name '*.json' \
+      -o -name '*.trace' \
+      -o -name '*.txt' \
+      -o -name '*kernel*' \
+      -o -name '*task*' \
+      -o -name '*pmu*' \
+      -o -name '*model*' \
+      -o -name '*op*' \
+    \) -print 2>/dev/null | while IFS= read -r profile_file; do
+      [ -f "$profile_file" ] || continue
+      target_file="$dest/$(safe_artifact_name "$profile_file")"
+      cp "$profile_file" "$target_file" >> "$log_file" 2>&1 && echo "copied_file: $profile_file -> $target_file" >> "$log_file"
+    done
+  done < "$candidates_file"
+}
+
 write_profile_search_log() {
   {
     echo "### search roots"
@@ -764,6 +826,8 @@ PROFILE_CANDIDATES_CHANGED="$RUN_DIR/profile-candidates-changed.txt"
 PROFILE_CANDIDATES="$RUN_DIR/profile-candidates.txt"
 PROFILE_CANDIDATE_SNAPSHOT_BEFORE="$RUN_DIR/profile-candidate-snapshot-before.txt"
 PROFILE_CANDIDATE_SNAPSHOT_AFTER="$RUN_DIR/profile-candidate-snapshot-after.txt"
+PROFILE_ARTIFACTS_DIR="$RUN_DIR/profile-artifacts"
+PROFILE_ARTIFACTS_LOG="$RUN_DIR/profile-artifacts.txt"
 PROFILE_SEARCH_LOG="$RUN_DIR/profile-search.txt"
 INPUT_LIST="$RUN_DIR/input-list.txt"
 INPUT_ABS_LIST="$RUN_DIR/input-absolute-list.txt"
@@ -971,6 +1035,7 @@ if [ "$RUN_DATA_PROC" -eq 1 ]; then
   fi
 fi
 
+copy_profile_artifacts "$PROFILE_CANDIDATES" "$PROFILE_ARTIFACTS_DIR" "$PROFILE_ARTIFACTS_LOG"
 find_profile_candidates > "$PROFILE_CANDIDATES_ALL"
 write_profile_candidate_snapshot "$PROFILE_CANDIDATES_ALL" "$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
 write_profile_search_log
@@ -1004,6 +1069,8 @@ write_manifest() {
     echo "PROFILE_CANDIDATES_CHANGED_FILE=$PROFILE_CANDIDATES_CHANGED"
     echo "PROFILE_CANDIDATE_SNAPSHOT_BEFORE_FILE=$PROFILE_CANDIDATE_SNAPSHOT_BEFORE"
     echo "PROFILE_CANDIDATE_SNAPSHOT_AFTER_FILE=$PROFILE_CANDIDATE_SNAPSHOT_AFTER"
+    echo "PROFILE_ARTIFACTS_DIR=$PROFILE_ARTIFACTS_DIR"
+    echo "PROFILE_ARTIFACTS_LOG=$PROFILE_ARTIFACTS_LOG"
     echo "PROFILE_SEARCH_FILE=$PROFILE_SEARCH_LOG"
   } > "$MANIFEST"
 }
