@@ -97,7 +97,6 @@ Options:
   --device-dir PATH      Remote work dir. Default: /data/local/tmp
   --output-name NAME     Remote output file name to pull. Default: output_0
   --output-type TYPE     Remote output tensor dtype passed to model_run_tool.
-                         Sobel/Soble bundles default to UINT8.
   --log-seconds N        Log capture window after runner start. Default: 30
   --evidence-dir DIR     Evidence directory. Default: artifacts/naked-omc-runs/<timestamp>
   --evidence-archive PATH
@@ -118,8 +117,8 @@ Options:
                          Default: include raw hilog only when filtered hilog is empty.
   --no-pull-output       Do not pull output from the device.
   --no-compare           Do not validate pulled output with the golden file.
-  --compare-script PATH  Python precision validator. Default: Sobel bundles use
-                         scripts/compare-sobel-output.py. Byte cmp is retired.
+  --compare-script PATH  Python precision validator. Required when COMPARE=1.
+                         Byte cmp is retired.
   --no-logs              Do not capture hilog.
   --no-strict            Do not exit nonzero when output/log validation is incomplete.
   --dry-run              Print resolved settings and exit.
@@ -231,15 +230,6 @@ print_matching_excerpt() {
   printf '%s\n' "${matches}" | sed -n "1,${max_lines}p" | sed 's/^/[kirin-naked-omc]   /' >&2 || true
 }
 
-is_sobel_precision_candidate() {
-  local omc_base
-  local haystack
-
-  omc_base="$(basename "${OMC:-}")"
-  haystack="$(printf '%s %s %s\n' "${omc_base}" "${BUNDLE_NAME:-}" "${BUNDLE_DESCRIPTION:-}" | tr '[:upper:]' '[:lower:]')"
-  [[ "${haystack}" == *sobel* || "${haystack}" == *soble* ]]
-}
-
 resolve_compare_script() {
   if [ -n "${COMPARE_SCRIPT}" ]; then
     case "${COMPARE_SCRIPT}" in
@@ -253,8 +243,6 @@ resolve_compare_script() {
         fi
         ;;
     esac
-  elif is_sobel_precision_candidate; then
-    COMPARE_SCRIPT="${ROOT}/scripts/compare-sobel-output.py"
   fi
 }
 
@@ -1087,9 +1075,6 @@ elif [ -z "${OMC}" ] && [ -f "${PREBUILT_OMC}" ]; then
 fi
 
 resolve_compare_script
-if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -z "${OUTPUT_TYPE}" ] && is_sobel_precision_candidate; then
-  OUTPUT_TYPE="UINT8"
-fi
 
 case "${LOG_SECONDS}" in
   ''|*[!0-9]*)
@@ -1185,7 +1170,7 @@ RAW_HILOG_MODE=${RAW_HILOG_MODE}
 RUNNER_LAUNCH_ERROR_RE=${RUNNER_LAUNCH_ERROR_RE}
 PULL_OUTPUT=${PULL_OUTPUT}
 COMPARE=${COMPARE}
-COMPARE_SCRIPT=${COMPARE_SCRIPT:-<auto/none>}
+COMPARE_SCRIPT=${COMPARE_SCRIPT:-<none>}
 STRICT=${STRICT}
 LOG_RE=${LOG_RE}
 EOF

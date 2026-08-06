@@ -75,7 +75,6 @@ Options:
   --golden PATH          Optional local golden output file.
   --output-name NAME     Target output name. Default: output_0.
   --output-type TYPE     Target output tensor dtype passed to model_run_tool.
-                         Sobel/Soble bundles default to UINT8.
   --target TARGET        hdc target id. Auto-detects when exactly one target is connected.
   --target-soc SOC       Expected target SoC, e.g. Kirin9020 or Kirin9030.
                          Used as a device-side assertion before profiling.
@@ -93,8 +92,8 @@ Options:
   --run-id ID            Stable run id. Default: host timestamp.
   --evidence-dir DIR     Host evidence dir. Default: artifacts/profiling/<run-id>.
   --no-compare           Pull output but skip golden comparison.
-  --compare-script PATH  Python precision validator. Default: Sobel bundles use
-                         scripts/compare-sobel-output.py. Byte cmp is retired.
+  --compare-script PATH  Python precision validator. Required when COMPARE=1.
+                         Byte cmp is retired.
   --no-data-proc         Ask target script not to run data_proc_tool.
   --no-archive           Ask target script not to archive the run directory.
   --no-clean             Ask target script not to remove stale profile/output files.
@@ -246,15 +245,6 @@ resolve_bundle_input_paths() {
   printf '%s\n' "${output}"
 }
 
-is_sobel_precision_candidate() {
-  local omc_base
-  local haystack
-
-  omc_base="$(basename "${OMC:-}")"
-  haystack="$(printf '%s %s %s\n' "${omc_base}" "${BUNDLE_NAME:-}" "${BUNDLE_DESCRIPTION:-}" | tr '[:upper:]' '[:lower:]')"
-  [[ "${haystack}" == *sobel* || "${haystack}" == *soble* ]]
-}
-
 resolve_compare_script() {
   if [ -n "${COMPARE_SCRIPT}" ]; then
     case "${COMPARE_SCRIPT}" in
@@ -268,8 +258,6 @@ resolve_compare_script() {
         fi
         ;;
     esac
-  elif is_sobel_precision_candidate; then
-    COMPARE_SCRIPT="${ROOT}/scripts/compare-sobel-output.py"
   fi
 }
 
@@ -688,9 +676,6 @@ if [ "${COMPARE_SCRIPT_EXPLICIT}" -eq 0 ] && [ -n "${BUNDLE_COMPARE_SCRIPT}" ]; 
 fi
 
 resolve_compare_script
-if [ "${OUTPUT_TYPE_EXPLICIT}" -eq 0 ] && [ -z "${OUTPUT_TYPE}" ] && is_sobel_precision_candidate; then
-  OUTPUT_TYPE="UINT8"
-fi
 
 [ -n "${OMC}" ] || die "OMC not provided and not found in bundle"
 [ -f "${OMC}" ] || die "OMC file not found: ${OMC}"
@@ -861,7 +846,7 @@ GOLDEN=${GOLDEN:-<none>}
 OUTPUT_NAME=${OUTPUT_NAME}
 OUTPUT_TYPE=${OUTPUT_TYPE:-<none>}
 COMPARE=${COMPARE}
-COMPARE_SCRIPT=${COMPARE_SCRIPT:-<auto/none>}
+COMPARE_SCRIPT=${COMPARE_SCRIPT:-<none>}
 HILOG_CLEAR=${HILOG_CLEAR}
 HILOG_CLEAR_TIMEOUT=${HILOG_CLEAR_TIMEOUT}
 

@@ -54,10 +54,10 @@ Scripted naked OMC `model_run_tool` wrapper:
 scripts/test-naked-omc-vetest.sh --bundle-dir /path/to/kirin9030-gelu-fp16-2026-08-04
 ```
 
-For Sobel bundles with `x.bin/y.bin`, the test and profiling wrappers pass
-`--output_type=UINT8` to `model_run_tool` and use
-`scripts/compare-sobel-output.py` to validate the exact pulled tensor with
-Python/numpy after the real-device run.
+Bundles can declare `OUTPUT_TYPE` and `COMPARE_SCRIPT` in `bundle.env`; the test
+and profiling wrappers pass those through without inferring the operator being
+tested. Sobel bundles should set `OUTPUT_TYPE=UINT8` and use
+`scripts/compare-sobel-output.py` as their precision validator.
 
 Collect a compact copy/paste diagnostics report for the latest profiling run:
 

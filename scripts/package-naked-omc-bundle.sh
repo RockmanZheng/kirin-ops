@@ -45,9 +45,11 @@ Options:
   --output-type TYPE   Device output tensor dtype, e.g. UINT8 for Sobel output_0.
   --target-soc SOC     Expected target SoC, e.g. kirin9030.
   --compare 0|1        Whether the runner should compare output with golden.
-                       Default: 1 when --golden is present, otherwise 0.
+                       Default: 1 when --golden and --compare-script are both
+                       present, otherwise 0.
   --compare-script PATH
-                       Optional Python precision validator copied into the bundle.
+                       Python precision validator copied into the bundle.
+                       Required when --compare 1.
   --out-dir DIR        Bundle root. Default: artifacts/naked-omc.
   --release-dir DIR    Zip output root. Default: artifacts/releases.
   --force              Replace an existing bundle directory/zip.
@@ -195,7 +197,7 @@ case "${NAME}" in
 esac
 
 if [ -z "${COMPARE}" ]; then
-  if [ -n "${GOLDEN}" ]; then
+  if [ -n "${GOLDEN}" ] && [ -n "${COMPARE_SCRIPT}" ]; then
     COMPARE=1
   else
     COMPARE=0
@@ -211,6 +213,9 @@ case "${COMPARE}" in
 esac
 
 [ -z "${COMPARE_SCRIPT}" ] || [ -f "${COMPARE_SCRIPT}" ] || die "compare script not found: ${COMPARE_SCRIPT}"
+if [ "${COMPARE}" = "1" ] && [ -z "${COMPARE_SCRIPT}" ]; then
+  die "--compare 1 requires --compare-script; byte comparison is retired"
+fi
 
 mkdir -p "${OUT_DIR}" "${RELEASE_DIR}"
 OUT_DIR="$(cd "${OUT_DIR}" && pwd -P)"
