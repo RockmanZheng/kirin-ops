@@ -48,9 +48,11 @@ Ready-to-run requires:
   Python interpreter that can import numpy.
 - `scripts/profile-naked-omc-vetest.sh` now auto-sources
   `scripts/local-macos-env.sh`, matching the test wrapper.
-- SoC normalization maps `changsha` and `q709030` to `kirin9030`.
+- SoC normalization maps `changsha` to `kirin9030`.
 - HDC target parsing strips CR characters so macOS `[Empty]` output is not
   mistaken for a target.
+- Removed the erroneous chip-name typo from docs and SoC normalization. The
+  accepted Kirin9030 identifiers are now `kirin9030` and `changsha`.
 
 Current no-phone helper result:
 

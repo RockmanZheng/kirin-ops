@@ -364,7 +364,7 @@ normalize_soc_token() {
 
   lower="$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')"
   case "${lower}" in
-    changsha*|q709030*)
+    changsha*)
       printf '%s\n' "kirin9030"
       ;;
     kirinx[0-9]*)
@@ -568,7 +568,7 @@ write_model_metadata() {
     echo "raw_strings:"
     if command -v strings >/dev/null 2>&1; then
       strings -a "${file}" | awk '
-        /soc_version|kirin[0-9]+|Kirin[0-9]+|kirinx[0-9]+|KirinX[0-9]+|q709030|Q709030|changsha|Changsha|chs|CHS|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|QuantMatmul|MatMul|Gelu|GELU|Add|hiai_version|platform|form/ {
+        /soc_version|kirin[0-9]+|Kirin[0-9]+|kirinx[0-9]+|KirinX[0-9]+|changsha|Changsha|chs|CHS|Bisheng-Compiler|custom_ascendc_lib|SobelCustom|QuantMatmul|MatMul|Gelu|GELU|Add|hiai_version|platform|form/ {
           print
           count++
           if (count >= 120) {

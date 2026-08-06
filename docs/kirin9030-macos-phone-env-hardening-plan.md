@@ -4,12 +4,12 @@ Date: 2026-08-06
 
 Status: host-side hardening is prepared. The environment is still not
 end-to-end ready until the phone is connected, authorized, and proves
-Kirin9030 / Changsha / Q709030 chip identity.
+Kirin9030 / Changsha chip identity.
 
 ## Scope
 
 Use this Apple Silicon macOS desktop as the host for a physical HarmonyOS phone
-with Kirin9030 / Changsha / Q709030 silicon, then run the existing naked OMC
+with Kirin9030 / Changsha silicon, then run the existing naked OMC
 bundle flow:
 
 ```bash
@@ -91,7 +91,7 @@ Primary references:
    hdc -t "$SN" shell param get ohos.boot.chiptype
    ```
 
-   Acceptance: this must prove Kirin9030 or an equivalent Changsha/Q709030
+   Acceptance: this must prove Kirin9030 or an equivalent Changsha
    device identity. If the target reports Kirin9020, stop.
 
 3. The target-side `model_run_tool` is not guaranteed to exist on a retail or
@@ -120,12 +120,12 @@ Primary references:
    when `hdc` is not already in `PATH`. `scripts/profile-naked-omc-vetest.sh`
    now does the same.
 
-6. SoC normalization handles Changsha/Q709030.
+6. SoC normalization handles Changsha.
 
    The test wrapper extracts and normalizes `kirinNNNN` tokens. It records
-   `Changsha` and `Q709030` in raw strings, and now normalizes those names to
+   `Changsha` in raw strings, and now normalizes that name to
    `kirin9030` for strict preflight. Bare `CHS` remains manual evidence unless
-   it appears with a stronger Kirin9030/Changsha/Q709030 token.
+   it appears with a stronger Kirin9030/Changsha token.
 
 ## Hardening Plan
 
@@ -166,7 +166,7 @@ Acceptance:
 
 - `hdc list targets -v` shows exactly the intended phone and it is authorized.
 - `uname -m` is `aarch64`.
-- `ohos.boot.chiptype` or nearby device params prove Kirin9030/Changsha/Q709030.
+- `ohos.boot.chiptype` or nearby device params prove Kirin9030/Changsha.
 
 Do not use `--skip-soc-check` if the device reports Kirin9020. That is the same
 class of failure as the swapped prod machine.
@@ -335,7 +335,7 @@ Acceptance:
   ```
 
 - The runner command includes `--output_type=UINT8`.
-- Evidence records the chip proof for Kirin9030/Changsha/Q709030.
+- Evidence records the chip proof for Kirin9030/Changsha.
 
 ### Phase 7: Profiling Only After Accuracy PASS
 
@@ -364,7 +364,7 @@ Prepared before the first serious macOS-phone run:
 
 1. Added `PYTHON_BIN` / numpy-capable Python auto-selection to both host wrappers.
 2. Auto-source `scripts/local-macos-env.sh` in the profiling wrapper.
-3. Normalize `changsha` and `q709030` to `kirin9030` in SoC preflight.
+3. Normalize `changsha` to `kirin9030` in SoC preflight.
 4. Added `scripts/check-kirin9030-phone-hdc-env.sh` for one-command host/phone
    readiness evidence.
 5. Hardened HDC `[Empty]` target parsing for macOS CR output.

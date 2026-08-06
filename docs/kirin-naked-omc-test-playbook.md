@@ -23,7 +23,7 @@ hdc -t "$SN" file recv /data/local/tmp/output_0 ./output.bin
 
 ## Kirin9030 OMC 搜索状态
 
-截至 2026-08-04，本仓没有找到可直接下载的 Kirin9030/Changsha/Q709030 预编译 `.omc`。
+截至 2026-08-04，本仓没有找到可直接下载的 Kirin9030/Changsha 预编译 `.omc`。
 
 已经确认的公开信息：
 
@@ -456,7 +456,7 @@ hdc -t "$SN" file recv /data/model/gelu_fp16_input.bin \
   kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16_input.bin
 
 strings -a kirin9030-gelu-fp16-2026-08-04-source/gelu_fp16.omc \
-  | grep -Ei 'soc_version|kirin[0-9]+|kirinx[0-9]+|q709030|changsha|chs|platform|hiai_version' \
+  | grep -Ei 'soc_version|kirin[0-9]+|kirinx[0-9]+|changsha|chs|platform|hiai_version' \
   | head -80
 ```
 
@@ -869,7 +869,7 @@ model_run_tool 的输出 layout 与 y.bin 不一致
 当前 blocker 是：
 
 ```text
-拿到一个真实 Kirin9030/Changsha/Q709030 可加载的预编译 OMC bundle
+拿到一个真实 Kirin9030/Changsha 可加载的预编译 OMC bundle
 bundle 必须包含对应 input .bin；有 golden 更好，没有也可以先 smoke
 公开源码目前只证明可生成 Kirin9030 OMC，没找到可下载的预编译 OMC
 最优先尝试从真机/内网机器 /data/model 提取 gelu_fp16/add_1 等 known-good OMC
