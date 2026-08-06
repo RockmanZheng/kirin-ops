@@ -306,11 +306,12 @@ scripts/compare-sobel-output.py \
 
 通过时脚本会报告 `output_size_status=EXACT_TENSOR_SIZE`、`comparison.output_vs_golden.passes_threshold=true`、`decision=PASS_ACCURACY_THRESHOLD`。若报告 `decision=FAIL_OUTPUT_SIZE_MISMATCH`，先确认 runner 命令里确实包含 `--output_type=UINT8`。
 
-`scripts/test-naked-omc-vetest.sh` 会在 `COMPARE=1` 且 bundle/OMC 名称包含 `sobel` 或 `soble` 时自动使用这个 Python/numpy 精度验证。也可以显式指定：
+`scripts/test-naked-omc-vetest.sh` 不根据 bundle/OMC 名字推断算子类型。Sobel bundle 必须在 `bundle.env` 里写 `OUTPUT_TYPE=UINT8` 和 `COMPARE_SCRIPT=...`，或者在命令行显式指定：
 
 ```bash
 scripts/test-naked-omc-vetest.sh \
   --bundle-dir "$PWD/kirin9030-sobel-custom-vector-fix-2026-08-04" \
+  --output-type UINT8 \
   --compare-script scripts/compare-sobel-output.py
 ```
 
@@ -376,12 +377,12 @@ COMPARE="0"
 ```text
 OMC          bundle 内的 .omc 文件名
 INPUT        一个输入文件，或逗号分隔的多个输入文件
-GOLDEN       可选；存在时做 compare
+GOLDEN       可选；给 Python 精度验证脚本使用
 OUTPUT_NAME  model_run_tool 在 device_dir 下生成的输出文件名，默认 output_0
 OUTPUT_TYPE  可选；传给 model_run_tool 的输出 dtype，例如 Sobel 使用 UINT8
 TARGET_SOC   目标芯片断言，例如 kirin9030
-COMPARE      1 表示必须和 GOLDEN 比较；0 表示只确认输出能被拉回
-COMPARE_SCRIPT 可选；Python 精度验证脚本。Sobel bundle 默认用 scripts/compare-sobel-output.py
+COMPARE      1 表示必须运行 COMPARE_SCRIPT；0 表示只确认输出能被拉回
+COMPARE_SCRIPT COMPARE=1 时必填；Python 精度验证脚本
 ```
 
 打包命令：
@@ -603,7 +604,7 @@ output_0 通过 Python 精度验证脚本
 summary.txt 里 result=PASS
 ```
 
-如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 Python 精度验证脚本通过，`PASS` 是更强确认。对 Kirin9030 SobelCustom，主测试脚本会传 `--output_type=UINT8` 并要求 `output_0` 精确匹配 Sobel uint8 tensor 大小；4x dump 这类输出大小不匹配会失败。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
+如果没有 golden，`PASS_OUTPUT_PULLED_NO_COMPARE` 说明裸 `.omc` CLI runner 路径已经跑通并产生输出。如果 Python 精度验证脚本通过，`PASS` 是更强确认。主测试脚本只按 bundle metadata 或 CLI 参数传 `--output_type`，不会根据算子名猜测；对 Kirin9030 SobelCustom，应声明 `OUTPUT_TYPE=UINT8` 并要求 `output_0` 精确匹配 Sobel uint8 tensor 大小。4x dump 这类输出大小不匹配会失败。后续再结合 hilog/NPU runtime marker 判断是否确实走了 NPU。
 
 交互终端里脚本会自动输出 ANSI 颜色，MobaXterm 会直接渲染：普通状态为青色，`WARN` 为黄色，`ERROR` 为红色，最终 `PASS` 为绿色。如果需要强制彩色输出，设置 `FORCE_COLOR=1` 或 `CLICOLOR_FORCE=1`；如果需要干净 copy/paste 日志，设置 `NO_COLOR=1`。
 

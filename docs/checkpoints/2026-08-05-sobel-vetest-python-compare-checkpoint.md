@@ -18,7 +18,8 @@ dump with trailing bytes.
 - Retire byte-for-byte golden comparison from the host vetest wrappers.
 - Treat `COMPARE=1` as "run the Python precision validator".
 - Use `COMPARE_SCRIPT` when a bundle needs a specific validator script.
-- Auto-select `scripts/compare-sobel-output.py` for Sobel/Soble bundles.
+- Keep the shell wrappers operator-agnostic: do not select validators from
+  bundle/OMC names.
 - Preserve `COMPARE=0` as output-pulled-only confirmation.
 - Let bundle manifests optionally specify `COMPARE_SCRIPT`.
 - Keep prod-side validation on the host that runs `hdc`; the Python script
@@ -34,15 +35,14 @@ Naming correction history:
 
 ## Current State
 
-- `scripts/test-naked-omc-vetest.sh` now runs
-  `scripts/compare-sobel-output.py` for Sobel bundles, or a bundle-provided
-  `COMPARE_SCRIPT`.
+- `scripts/test-naked-omc-vetest.sh` now runs a Python validator only when
+  `COMPARE_SCRIPT` is provided by the bundle or CLI.
 - `scripts/profile-naked-omc-vetest.sh` uses the same Python compare behavior
   and fails if compare was requested but the pulled output is missing or empty.
 - `scripts/package-naked-omc-bundle.sh` can write `COMPARE_SCRIPT`.
 - `docs/kirin-naked-omc-test-playbook.md` documents Python/numpy Sobel compare.
-- Existing Kirin9030 Sobel vector-fix bundles still work through auto detection
-  because their names include `sobel`.
+- Kirin9030 Sobel vector-fix bundles should carry `COMPARE_SCRIPT` in
+  `bundle.env`, or the run command must pass `--compare-script`.
 
 ## Prod Retest Command
 
@@ -159,7 +159,8 @@ too confusing for the real contract.
 Decision:
 
 - The inference wrapper must request the expected output dtype from
-  `model_run_tool`, using `--output_type=UINT8` for Sobel/Soble bundles.
+  `model_run_tool` only when `OUTPUT_TYPE` is provided by bundle metadata or
+  CLI. It does not infer dtype from operator names.
 - `bundle.env` may now carry `OUTPUT_TYPE`; the host test wrapper and profiling
   wrapper both read it.
 - `scripts/compare-sobel-output.py` is the precision contract. It checks exactly
@@ -183,6 +184,24 @@ Validation:
   exact-size output with max diff 1 returns `decision=PASS_ACCURACY_THRESHOLD`;
   exact-size output with max diff 6 returns `decision=FAIL_ACCURACY_THRESHOLD`;
   4x output returns `decision=FAIL_OUTPUT_SIZE_MISMATCH`.
-- Dry-runs proved Sobel bundles resolve `OUTPUT_TYPE=UINT8`, profiling passes
+- Dry-runs proved bundle metadata `OUTPUT_TYPE=UINT8` makes profiling pass
   `--output-type 'UINT8'` to the target helper, and the target helper runs
   `model_run_tool` with `--output_type=UINT8`.
+
+## Operator-agnostic runner follow-up
+
+The host wrappers briefly had Sobel/Soble name-based fallbacks for
+`COMPARE_SCRIPT` and `OUTPUT_TYPE`. That violated the generic bundle model: the
+runner should not know which operator or kernel is under test.
+
+Current contract:
+
+- `OUTPUT_TYPE` comes from `bundle.env`, environment, or `--output-type`.
+- `COMPARE_SCRIPT` comes from `bundle.env`, environment, or `--compare-script`.
+- If `COMPARE=1` and no `COMPARE_SCRIPT` is available, the wrapper fails instead
+  of guessing.
+- The packager only defaults `COMPARE=1` when both `--golden` and
+  `--compare-script` are provided; explicit `--compare 1` requires
+  `--compare-script`.
+- A Sobel bundle is responsible for declaring `OUTPUT_TYPE=UINT8` and
+  `COMPARE_SCRIPT=compare-sobel-output.py` if it wants strict Sobel validation.
